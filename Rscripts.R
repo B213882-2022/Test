@@ -1,14 +1,21 @@
 library(SingleCellExperiment)
 library(scater)
 library(scran)
+library(AnnotationHub)
 library(biomaRt)
 library(pheatmap)
 library(data.table)
 library(gplots)
 library(gridExtra)
-library(AnnotationDbi)
 library(latex2exp)
 library(tidyr)
+library(AnnotationDbi)
+library(Seurat)
+library(scry)
+library(scDblFinder)
+
+# set working directory
+setwd('/home/s2321661/Test')
 
 # read scRNA seq data (raw count) and cell annotation
 raw_count <- fread('counts.txt', skip=1, header=TRUE, data.table = FALSE)
@@ -38,9 +45,11 @@ columns(ens.mm.v109)
 gene_anno <- AnnotationDbi::select(ens.mm.v109, keys=rownames(sce), 
                                    keytype='GENEID', column='GENENAME')
 head(gene_anno)
+sum(gene_anno$GENENAME == '')  # the number of failures in gene name annotation
 rowData(sce)$GENENAME <- make.names(gene_anno$GENENAME[match(rownames(sce),gene_anno$GENEID)],
                                     unique = TRUE)
-length(grep('^NA',rowData(sce)$GENENAME))  # the number of failures in gene name annotation
+sum(grepl('^NA',rowData(sce)$GENENAME))  
+sum(grepl('^X\\.|^X$',rowData(sce)$GENENAME) == 1)  # the number of failures in gene name annotation
 rowData(sce)$ENSEMBL <- rownames(sce)
 # ERCC name annotation
 is.spike <- grepl("^ERCC", rowData(sce)$ENSEMBL)
@@ -53,11 +62,14 @@ rownames(sce) <- rowData(sce)$GENENAME
 sce
 head(rowData(sce))
 length(grep('^NA',rownames(sce)))
+sum(colSums(assays(sce[is.spike, ])$counts) == 0)  # check how many cells do not have spike-ins
 sce_origin <- sce  #backup
 rm(idx)
 rm(ah)
 rm(gene_anno)
+rm(ens.mm.v109)
 save(list = ls(), file = 'sce_preperation.RData')
+#load("sce_preperation.RData")
 
 # Get Mitochondrial genes' ENSEMBL ID from Biomart
 #listEnsembl()
@@ -88,18 +100,20 @@ count(is.mito)
 rm(MT_id)
 
 # cell QC
-QC_stats <- perCellQCMetrics(sce, subsets=list(ERCC=is.spike, Mt=is.mito))
+QC_stats.cell <- perCellQCMetrics(sce, subsets=list(ERCC=is.spike, Mt=is.mito))
 # or we can store the stats directly to colData 
 # by addPerCellQC(sce, subsets=list(ERCC=is.spike, Mt=is.mito))
-QC_stats
-sce$total_counts <- QC_stats$sum/1e6
-sce$detected_genes <- QC_stats$detected
-sce$mito_percent <- QC_stats$subsets_Mt_percent
-sce$ERCC_percent <- QC_stats$subsets_ERCC_percent
+QC_stats.cell
+sce$total_counts <- QC_stats.cell$sum/1e6
+sce$detected_genes <- QC_stats.cell$detected
+sce$mito_percent <- QC_stats.cell$subsets_Mt_percent
+sce$ERCC_percent <- QC_stats.cell$subsets_ERCC_percent
 
 # check QC failed cells (filter cells)
-cell_filter <- perCellQCFilters(QC_stats,sub.fields=c("subsets_Mt_percent", "subsets_ERCC_percent"))
-cell_filter
+cell_filter <- perCellQCFilters(QC_stats.cell,sub.fields=c("subsets_Mt_percent",
+                                                      "subsets_ERCC_percent"))
+# or use quickPerCellQC(QC_stats.cell,sub.fields=c("subsets_Mt_percent", "subsets_ERCC_percent"))
+cell_filter  
 colSums(as.matrix(cell_filter))  # check how many cells were dropped 
 summary(cell_filter$discard)  # check total discarded cells count
 sce$discard <- cell_filter$discard
@@ -108,7 +122,7 @@ sce$low_detected_genes <- cell_filter$low_n_features
 sce$high_mito_percent <- cell_filter$high_subsets_Mt_percent
 sce$high_ERCC_percent <- cell_filter$high_subsets_ERCC_percent
 sce_origin <- sce  # backup
-dim(sce)
+sce
 
 # Dot plots that summarize cell QC
 thres_total_counts <- attributes(cell_filter$low_lib_size)$thresholds[1]/1e6
@@ -186,9 +200,10 @@ QC_dot <- gridExtra::grid.arrange(
               label = round(thres_ERCC_percent,2), 
               vjust = -0.8, size=3.9, color='red') + 
     coord_cartesian(clip = 'off'),
-  ncol=1
+  ncol=2,
+  nrow=2
 )
-ggsave('figures/QC_summary.pdf',QC_dot, device='pdf', width = 8, height = 24)
+ggsave('figures/QC_summary.pdf',QC_dot, device='pdf', width = 15, height = 15)
 
 # Table summary of QC
 total.cells <- table(sce$Cell.Type)
@@ -314,7 +329,7 @@ rm(venn)
 
 # Histogram summary of QC
 QC_hist <- gridExtra::grid.arrange(
-  ggplot(as.data.frame(QC_stats), aes(x=sum/1e6))+
+  ggplot(as.data.frame(QC_stats.cell), aes(x=sum/1e6))+
     geom_histogram(color='grey80',bins=50) +
     geom_density(alpha=.2, fill="blue") +
     xlab('Library sizes (millions)') +
@@ -322,21 +337,21 @@ QC_hist <- gridExtra::grid.arrange(
     geom_vline(aes(xintercept=thres_total_counts), color = 'red', linetype="dashed") +
     annotate('text',x=thres_total_counts-2,y=100, label=round(thres_total_counts,2),color = 'red') +
     theme(plot.margin=margin(1,1,1,1,'cm')),
-  ggplot(as.data.frame(QC_stats), aes(x=detected))+
+  ggplot(as.data.frame(QC_stats.cell), aes(x=detected))+
     geom_histogram(color='grey80',bins=50) +
     xlab('Number of detected genes') +
     ylab('Number of cells') +
     geom_vline(aes(xintercept=thres_detected_genes), color = 'red', linetype="dashed") +
     annotate('text',x=thres_detected_genes-1400,y=60, label=round(thres_detected_genes,2),color = 'red') +
     theme(plot.margin=margin(1,1,1,1,'cm')),
-  ggplot(as.data.frame(QC_stats), aes(x=subsets_Mt_percent))+
+  ggplot(as.data.frame(QC_stats.cell), aes(x=subsets_Mt_percent))+
     geom_histogram(color='grey80',bins=50) +
     xlab('Mitochondrial proportion (%)') +
     ylab('Number of cells') +
     geom_vline(aes(xintercept=thres_mito_percent), color = 'red', linetype="dashed") +
     annotate('text',x=thres_mito_percent+6,y=200, label=round(thres_mito_percent,2),color = 'red') +
     theme(plot.margin=margin(1,1,1,1,'cm')),
-  ggplot(as.data.frame(QC_stats), aes(x=subsets_ERCC_percent))+
+  ggplot(as.data.frame(QC_stats.cell), aes(x=subsets_ERCC_percent))+
     geom_histogram(color='grey80',bins=50) +
     xlab('ERCC proportion (%)') +
     ylab('Number of cells') +
@@ -348,4 +363,128 @@ QC_hist <- gridExtra::grid.arrange(
 ggsave('figures/QC_hist.jpg',QC_hist, device='jpg', width = 10, height = 8)
 
 # drop cells
-sce <- sce[, !cell_filter$discard]  
+sce <- sce[, !cell_filter$discard]
+
+# gene filtering
+# remove spikes
+sce <- splitAltExps(sce, is.spike)
+altExpNames(sce) <- 'spikes'
+sce
+# remove low expression genes (express in less than 3 cells)
+QC_stats.gene <- perFeatureQCMetrics(sce)
+detected_cell_prop.hist <- ggplot(as.data.frame(QC_stats.gene), aes(x=detected)) +
+  geom_histogram(color='grey80',bins=100) +
+  xlab('Detected %') +
+  ylab('Counts') + 
+  ggtitle('Genes with expression >0')
+ggsave('figures/detected_cell_prop.jpg',detected_cell_prop.hist, 
+       device='jpg', width = 8, height = 6)
+rowData(sce)$mean <- QC_stats.gene$mean
+rowData(sce)$detected_prop <- QC_stats.gene$detected
+sum(rowSums(assays(sce)$counts > 0) >= 3)  # check how many genes are left 
+sce <- sce[rowSums(assays(sce)$counts > 0) >= 3,]
+sce
+
+# Normalisation
+sce <- computeSumFactors(sce, cluster = quickCluster(sce))
+sce <- logNormCounts(sce)
+sce
+
+# check oct4 variation
+# raw counts
+oct4_variation_rawcounts <- plotExpression(sce,'Pou5f1',x='Cell.Type',exprs_values = "counts") +
+  xlab('Cell Type') + ylab('Raw Counts') + 
+  ggtitle('Oct4 expression level (raw counts)')
+oct4_variation_rawcounts
+ggsave('figures/oct4_variation_rawcounts.jpg',oct4_variation_rawcounts, device='jpg', width = 8, height = 10)
+# log counts
+oct4_variation_logcounts <- plotExpression(sce,'Pou5f1',x='Cell.Type',exprs_values = "logcounts") +
+  xlab('Cell Type') + ylab('Log Counts') + 
+  ggtitle('Oct4 expression level after Normalisation (log counts)')
+oct4_variation_logcounts
+ggsave('figures/oct4_variation_logcounts.jpg',oct4_variation_logcounts, device='jpg', width = 8, height = 10)
+
+# correlation (scatter plot)
+targets <- c('Nanog', 'Sox2','Klf4','Zfp42','Utf1','Esrrb')
+#rownames(sce)[grepl('Esrrb',rownames(sce))]
+# raw counts
+oct4_corr_scatter_rawcounts <- plotExpression(sce,targets,x='Pou5f1',exprs_values = "counts",color_by = 'Cell.Type') + 
+  xlab('Oct4 expression level') + 
+  ylab('Expression level (raw counts)') +
+  ggtitle('Expression level of Oct4 and some of its target genes') +
+  guides(color=guide_legend("Cell Type"))
+oct4_corr_scatter_rawcounts
+ggsave('figures/oct4_corr_scatter_rawcounts.jpg',oct4_corr_scatter_rawcounts, device='jpg', width = 8, height = 10)
+# log counts
+oct4_corr_scatter_logcounts <- plotExpression(sce,targets,x='Pou5f1',exprs_values = "logcounts",color_by = 'Cell.Type') + 
+  xlab('Oct4 expression level') + 
+  ylab('Expression level (log counts after normalisation)') +
+  ggtitle('Expression level of Oct4 and some of its target genes') +
+  guides(color=guide_legend("Cell Type"))
+oct4_corr_scatter_logcounts
+ggsave('figures/oct4_corr_scatter_logcounts.jpg',oct4_corr_scatter_logcounts, device='jpg', width = 8, height = 10)
+rm(targets)
+
+# fearture selection
+# scran HVG top 1000
+# model gene variance by trend
+var.out <- modelGeneVar(sce)
+plot(var.out$mean, var.out$total, pch=16, cex=0.6, xlab='mean log-expression',
+     ylab="Total Variance of log-expression")
+o <- order(var.out$mean)
+lines(var.out$mean[o], var.out$tech[o], col="dodgerblue", lwd=2)
+features_hvg <- getTopHVGs(var.out,n=4000)
+top50_hvg <- plotExpression(sce,features_hvg)
+top50_hvg
+ggsave('figures/top50_hvg.jpg',top50_hvg, device='jpg', width = 10, height = 6)
+rm(o)
+
+# Deviance (select genes that are both highly expressed and highly variable)
+dev <- rowData(devianceFeatureSelection(sce,assay = "counts", fam='binomial'))$binomial_deviance
+features_dev <- names(dev[order(dev,decreasing=TRUE)])[1:2000]
+top50_dev <- plotExpression(sce,features_dev)
+top50_dev
+ggsave('figures/top50_dev.jpg',top50_dev, device='jpg', width = 10, height = 6)
+
+# Dimensionality reduction
+set.seed(213882)
+#set.seed(NULL)
+# by hvg
+length(features_hvg)
+sce_hvg <- runPCA(sce,subset_row = features_hvg)
+sce_hvg <- runTSNE(sce_hvg,perplexity=10, subset_row = features_hvg)
+sce_hvg <- runUMAP(sce_hvg, subset_row = features_hvg)
+reducedDimNames(sce_hvg)
+dim_reduce_hvg <- gridExtra::grid.arrange(
+  plotReducedDim(sce_hvg, "PCA", colour_by = 'Cell.Type')
+  +ggtitle('PCA'),
+  plotReducedDim(sce_hvg, "TSNE", colour_by = 'Cell.Type')
+  +ggtitle('TSNE'),
+  plotReducedDim(sce_hvg, "UMAP", colour_by = 'Cell.Type')
+  +ggtitle('UMAP'),
+  ncol=1
+)
+ggsave('figures/dim_reduce_hvg(4000).jpg',dim_reduce_hvg, device='jpg', width = 6, height = 12)
+# by dev
+length(features_dev)
+sce_dev <- runPCA(sce,subset_row = features_dev)
+sce_dev <- runTSNE(sce_dev,perplexity=10, subset_row = features_dev)
+sce_dev <- runUMAP(sce_dev, subset_row = features_dev)
+reducedDimNames(sce_hvg)
+dim_reduce_dev <- gridExtra::grid.arrange(
+  plotReducedDim(sce_dev, "PCA", colour_by = 'Cell.Type')
+  +ggtitle('PCA'),
+  plotReducedDim(sce_dev, "TSNE", colour_by = 'Cell.Type')
+  +ggtitle('TSNE'),
+  plotReducedDim(sce_dev, "UMAP", colour_by = 'Cell.Type')
+  +ggtitle('UMAP'),
+  ncol=1
+)
+ggsave('figures/dim_reduce_dev(2000).jpg',dim_reduce_dev, device='jpg', width = 6, height = 12)
+
+# Doublet test
+dbl.dens <- computeDoubletDensity(sce_dev, subset.row=features_dev, 
+                                  d=ncol(reducedDim(sce_dev)))
+sce_dev$DoubletScore <- dbl.dens
+doublet_tSNE <- plotTSNE(sce_dev, colour_by="DoubletScore")
+ggsave('figures/doublet_tSNE.jpg',doublet_tSNE, device='jpg', width = 8, height = 7)
