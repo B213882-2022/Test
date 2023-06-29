@@ -112,6 +112,15 @@ is.mito <- grepl(MT_id, rowData(sce)$ENSEMBL)
 count(is.mito)
 rm(MT_id)
 
+# # Doublet test
+# sce_dbl <- scDblFinder(sce)
+# table(sce_dbl$scDblFinder.class)  # be careful to record the threshold
+# ggplot(data.frame(class=sce_dbl$scDblFinder.class, score=sce_dbl$scDblFinder.score)) +
+#   geom_histogram(aes(x=score),bins = 100, color='grey80') + 
+#   xlab('Doublet score') +
+# sce[,sce_dbl$scDblFinder.class != 'doublet']
+# rm(sce_dbl)
+
 # cell QC
 QC_stats.cell <- perCellQCMetrics(sce, subsets=list(ERCC=is.spike, Mt=is.mito))
 # or we can store the stats directly to colData 
@@ -485,7 +494,7 @@ oct4_corr_scatter_logcounts
 ggsave('figures/oct4_corr_scatter_logcounts.jpg',oct4_corr_scatter_logcounts, device='jpg', width = 8, height = 10)
 rm(targets)
 # negative control
-hk_genes <- c('Actb','Gapdh','Pgk1','Ppia','Rpl38','Rpl13a')
+hk_genes <- c('Actb','Tbp','Pgk1','Ppia','Rpl38','Hmbs')
 oct4_corr_scatter_rawcounts.hk <- plotExpression(sce,hk_genes,x='Pou5f1',exprs_values = "counts",color_by = 'Cell.Type') + 
   xlab('Oct4 expression level') + 
   ylab('Expression level (raw counts)') +
@@ -501,7 +510,6 @@ oct4_corr_scatter_logcounts.hk <- plotExpression(sce,hk_genes,x='Pou5f1',exprs_v
   guides(color=guide_legend("Cell Type"))
 oct4_corr_scatter_logcounts.hk
 ggsave('figures/oct4_corr_scatter_logcounts_hk.jpg',oct4_corr_scatter_logcounts.hk, device='jpg', width = 8, height = 10)
-rm(hk_genes)
 
 # fearture selection
 assays(sce)$norm_counts <- 2^(logcounts(sce))-1
@@ -546,7 +554,8 @@ ggsave('figures/top100_dev_raw.jpg',top100_dev.raw, device='jpg', width = 20, he
 # check intersection between features selected by HVG and DEV
 features_hvg <- getTopHVGs(var.out,n=2000)
 features_dev <- names(dev[order(dev,decreasing=TRUE)])[1:2000]
-features_venn <- ggVennDiagram(data.frame(features_dev=features_dev,features_hvg=features_hvg)) +
+features_venn <- ggVennDiagram(data.frame(features_dev=features_dev,features_hvg=features_hvg),
+                               label = "count", label_size = 5) +
   theme(legend.position = "none") +
   ggtitle('intersection of top 2000 features selected by Dev VS. HVG') +
   theme(plot.title = element_text(hjust = 0.5))
@@ -706,7 +715,8 @@ rm(results)
 
 # PC methods selection
 # elbow
-features_dev <- names(dev[order(dev,decreasing=TRUE)])[1:4000]
+features_dev <- names(dev[order(dev,decreasing=TRUE)])[1:5000]
+features_hvg <- getTopHVGs(var.out,n=5000)
 sce_dev <- runPCA(sce,subset_row = features_dev)
 percent.var <- attr(reducedDim(sce_dev), "percentVar")
 PC_num.elbow <- findElbowPoint(percent.var)
@@ -810,7 +820,7 @@ sce_seurat <- sce_seurat[rowSums(assays(sce_seurat)$counts > 0) >= 3,]
 sce_seurat
 sce_seurat <- computeSumFactors(sce_seurat, cluster = quickCluster(sce_seurat))
 sce_seurat <- logNormCounts(sce_seurat)
-sce_seurat <- runPCA(sce_seurat,ncomponents=PC_num.gml, subset_row = features_dev)
+sce_seurat <- runPCA(sce_seurat,ncomponents=PC_num.gml, subset_row = features_dev[1:1000])
 sce_seurat <- runTSNE(sce_seurat, perplexity=20, subset_row = features_dev)
 plotTSNE(sce_seurat, colour_by = 'Cell.Type')  # make sure sce_seurat TSNE plot is the same as sce_dev/sce_hvg
 seurat <- as.Seurat(sce_seurat, counts = "counts", data = "logcounts")
@@ -818,47 +828,92 @@ seurat <- as.Seurat(sce_seurat, counts = "counts", data = "logcounts")
 #VariableFeatures(seurat)[1:100]
 #VlnPlot(object = seurat, features = c('Pou5f1','Nanog'))
 seurat <- ScaleData(seurat, features = rownames(seurat))
-seurat <- RunPCA(seurat, features = features_dev, seed.use = seed)  # here the features are chosen by deviance
+
+# select the best resolution of leiden algorithm
+sweep_para <- function(seurat, seed, features, res, feature_num){
+  para_res <- c()
+  sil_score <- c()
+  cluster_num <- c()
+  ft_num <- c()
+  PC_num <- c()
+  for(j in feature_num){
+    print(paste0('feature number = ', j))
+    seurat <- RunPCA(seurat, features = features[1:j], seed.use = seed)
+    seurat_PC_nums <- intrinsicDimension::maxLikGlobalDimEst(seurat[['pca']]@cell.embeddings, k = 10)
+    seurat_PC_nums
+    PC_sele <- round(seurat_PC_nums$dim.est,0)
+    seurat <- FindNeighbors(seurat, dims = 1:PC_sele)
+    for(i in res){
+      print(paste0('res = ', i))
+      para_res <- c(para_res,i)
+      seurat <- FindClusters(seurat, resolution = i, algorithm = 4)
+      cluster <- seurat@meta.data[[paste0('originalexp_snn_res.',i)]]
+      sil <- cluster::silhouette(as.integer(cluster), dist(seurat[['pca']]@cell.embeddings[,1:PC_sele]))
+      sil.data <- as.data.frame(sil)
+      score <- mean(sil.data$sil_width)
+      sil_score <- c(sil_score,score)
+      cluster_num <- c(cluster_num, length(table(cluster)))
+      ft_num <- c(ft_num, j)
+      PC_num <- c(PC_num, PC_sele)
+    }
+    cat('\n')
+  }
+  r <- data.frame(res=para_res, sil_score=sil_score, clust_num=cluster_num,
+                  feature_num=ft_num, PC_num=PC_num)
+  return(r)
+}
+out <- sweep_para(seurat, seed, features_dev, 
+                  res=seq(0.1,2.0,0.1),
+                  feature_num = c(100, 250, 500, seq(1000,5000,500)))
+out
+ggplot(out, aes(x=res,y=sil_score,label=paste0('(',res,', ',round(sil_score,3),')'))) +
+  geom_line(aes(color = factor(feature_num))) +
+  ylab('Silhouette Score') +
+  xlab('Leiden Resolution') +
+  guides(color=guide_legend(title="Feature Number")) +
+  scale_color_brewer(palette="Paired")
+ggsave('figures/leiden_para_1.jpg',device='jpg', width = 8, height = 5)
+ggplot(out, aes(x = factor(feature_num), y = sil_score, 
+                label=paste0('(',res,', ',round(sil_score,3),')'))) +
+  geom_bar(stat = "summary", fun = "var")+
+  ylab('Variance of Silhouette') +
+  xlab('Feature Number')
+ggsave('figures/leiden_para_2.jpg',device='jpg', width = 8, height = 5)
+rm(out)
+
+# comparison of cluster results
+compare_para <- function(seurat, seed, resolution, feature_num){
+  clusters <- list()
+  for(i in c(1,2)){
+    res <- resolution[i]
+    ft_num <- feature_num[i]
+    seurat <- RunPCA(seurat, features = features_dev[1:ft_num], seed.use = seed)
+    seurat_PC_nums <- intrinsicDimension::maxLikGlobalDimEst(seurat[['pca']]@cell.embeddings, k = 10)
+    seurat_PC_nums <- round(seurat_PC_nums$dim.est,0)
+    seurat <- FindNeighbors(seurat, dims = 1:seurat_PC_nums)
+    seurat <- FindClusters(seurat, resolution = res, algorithm = 4)
+    name <- paste0('originalexp_snn_res.',res)
+    cluster <- seurat@meta.data[[name]]
+    clusters[[i]] <- cluster
+  }
+  return(clusters)
+}
+com_para_r <- compare_para(seurat, seed, c(0.7,0.7),c(2500, 4000))
+table(com_para_r[[1]],com_para_r[[2]])
+rm(com_para_r)
+
+# select the best resolution and feature number!!
+res_sele <- 0.7
+seurat <- RunPCA(seurat, features = features_dev[1:2500], seed.use = seed)  # here the features are chosen by deviance
 #seurat <- RunTSNE(seurat,seed.use = seed, perplexity = 20)
 DimPlot(seurat, reduction = "TSNE" , group.by = 'Cell.Type',label = TRUE)
 #DimPlot(seurat, reduction = "tsne" , group.by = 'Cell.Type',label = TRUE)
-DimHeatmap(seurat, reduction = "pca",dims = 1:3)
+#DimHeatmap(seurat, reduction = "pca",dims = 1:3)
 ElbowPlot(seurat)
 seurat_PC_nums <- intrinsicDimension::maxLikGlobalDimEst(seurat[['pca']]@cell.embeddings, k = 10)
 seurat_PC_nums
 seurat_PC_nums <- round(seurat_PC_nums$dim.est,0)
 seurat <- FindNeighbors(seurat, dims = 1:seurat_PC_nums)
-# select the best resolution of leiden algorithm
-sweep_para <- function(seurat, res, PC_sele){
-  para_res <- c()
-  sil_score <- c()
-  cluster_num <- c()
-  for(i in res){
-    print(paste0('res = ', i))
-    para_res <- c(para_res,i)
-    seurat <- FindClusters(seurat, resolution = i, algorithm = 4)
-    cluster <- seurat@meta.data[[paste0('originalexp_snn_res.',i)]]
-    sil <- cluster::silhouette(as.integer(cluster), dist(seurat[['pca']]@cell.embeddings[,1:PC_sele]))
-    sil.data <- as.data.frame(sil)
-    score <- mean(sil.data$sil_width)
-    sil_score <- c(sil_score,score)
-    cluster_num <- c(cluster_num, length(table(cluster)))
-  }
-  r <- data.frame(res=para_res, sil_score=sil_score, clust_num=cluster_num)
-  return(r)
-}
-out <- sweep_para(seurat, res=c(0.2,0.4,0.6,0.8,1.0,1.2,1.4), PC_sele = seurat_PC_nums)
-out
-ggplot(out, aes(x=res,y=sil_score,label=paste0('(',res,', ',round(sil_score,3),')'))) +
-  geom_line() +
-  geom_point() +
-  geom_text(vjust = -0.5, size=3) +
-  ylab('Silhouette Score') +
-  xlab('Leiden Resolution')
-ggsave('figures/leiden_res.jpg',device='jpg', width = 8, height = 7)
-rm(out)
-# select the best resolution and cluster cells!!
-res_sele <- 0.8
 seurat <- FindClusters(seurat, resolution = res_sele, algorithm = 4)  # algorithm 4 is "Leiden"; 1 is "Louvain"
 DimPlot(seurat, reduction = "TSNE" ,label = TRUE, shape.by = 'Cell.Type')
 #ggsave('figures/leiden_tsne.jpg', device='jpg', width = 8, height = 7)
@@ -869,7 +924,7 @@ group_marker %>% dplyr::filter(p_val_adj < 0.01) %>%
 DoHeatmap(seurat,features=top10$gene, slot = "scale.data") #+ scale_fill_virdis()
 ggsave('figures/leiden_markers.jpg', device='jpg', width = 10, height = 8)
 #FeaturePlot(seurat, reduction = 'TSNE', features=top10[top10['cluster']==1,]$gene[1:4])
-cluster.leiden <- seurat@meta.data$originalexp_snn_res.0.8
+cluster.leiden <- seurat@meta.data[[paste0('originalexp_snn_res.',res_sele)]]
 colLabels(sce_dev) <- cluster.leiden
 # using pretty heatmap for plotting
 plotHeatmap(sce_dev, exprs_values = "logcounts", order_columns_by=c("label", "Cell.Type"), 
@@ -878,14 +933,14 @@ plotHeatmap(sce_dev, exprs_values = "logcounts", order_columns_by=c("label", "Ce
 
 # Find markers between selected two groups
 #FindMarkers(seurat, ident.1 = 1, min.pct = 0.25, only.pos = TRUE)  # compare to the rest of cells
-group_diff <- FindMarkers(seurat, ident.1 = 3, ident.2 = 5, min.pct = 0.25)
+group_diff <- FindMarkers(seurat, ident.1 = 2, ident.2 = 5, min.pct = 0.25)
 head(group_diff)
 group_diff <- group_diff[group_diff$p_val_adj < 0.01, ]
 nrow(group_diff)
 write.csv(group_diff,'figures/group_diff_serum.csv',row.names = TRUE)
 FeaturePlot(seurat, features=rownames(group_diff[1:20,]))
 ggsave('figures/group_diff_serum_1.jpg', device='jpg', width = 17, height = 15)
-DoHeatmap(seurat,features=rownames(group_diff[1:50,]), slot = "scale.data")
+#DoHeatmap(seurat,features=rownames(group_diff[1:50,]), slot = "scale.data")
 group_diff_serum_2 <- plotHeatmap(sce_dev, exprs_values = "logcounts", order_columns_by=c("label", "Cell.Type"), 
             features=rownames(group_diff[1:50,]), cluster_rows = FALSE, center = TRUE ,
             color = colorRampPalette(c('#fc00fc','black','#fcfc00'))(100), 
@@ -931,17 +986,5 @@ detail_sil <- function(res, seurat, PC_sele){
 }
 detail_sil(res=c(0.8,1.2), seurat = seurat, PC_sele=seurat_PC_nums)
 
-# cluster results comparison
-tab <- table(SC3=sce_dev_SC3$sc3_6_clusters, Leiden=seurat@meta.data$originalexp_snn_res.0.8)
-rownames(tab) <- paste("SC3", rownames(tab))
-colnames(tab) <- paste("Leiden", colnames(tab))
-tab
-pheatmap(tab, cluster_cols=FALSE, cluster_rows=FALSE)
-rm(tab)
 
-# Doublet test
-dbl.dens <- computeDoubletDensity(sce_dev, subset.row=features_dev, 
-                                  d=ncol(reducedDim(sce_dev)))
-sce_dev$DoubletScore <- dbl.dens
-doublet_tSNE <- plotTSNE(sce_dev, colour_by="DoubletScore")
-ggsave('figures/doublet_tSNE.jpg',doublet_tSNE, device='jpg', width = 8, height = 7)
+
