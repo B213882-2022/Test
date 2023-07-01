@@ -27,9 +27,16 @@ library(dplyr)
 library(viridisLite)
 library(viridis)
 
+# preparetion ##################################################################
 # set working directory
 setwd('/home/s2321661/Test')
 
+# set random seed
+seed <- 1000
+
+
+
+# load data ####################################################################
 # read scRNA seq data (raw count) and cell annotation
 raw_count <- fread('counts.txt', skip=1, header=TRUE, data.table = FALSE)
 rownames(raw_count) <- raw_count$Geneid
@@ -64,12 +71,14 @@ rowData(sce)$GENENAME <- make.names(gene_anno$GENENAME[match(rownames(sce),gene_
 sum(grepl('^NA',rowData(sce)$GENENAME))  
 sum(grepl('^X\\.|^X$',rowData(sce)$GENENAME) == 1)  # the number of failures in gene name annotation
 rowData(sce)$ENSEMBL <- rownames(sce)
+
 # ERCC name annotation
 is.spike <- grepl("^ERCC", rowData(sce)$ENSEMBL)
 count(is.spike)
 idx <-  which(is.spike)
 rowData(sce)$GENENAME[idx] <- rowData(sce)$ENSEMBL[idx]
 rowData(sce)$GENENAME[idx]
+
 # change sce rownames from ENSEMBL IDs to gene names and ERCC names
 rownames(sce) <- rowData(sce)$GENENAME
 sce
@@ -112,16 +121,64 @@ is.mito <- grepl(MT_id, rowData(sce)$ENSEMBL)
 count(is.mito)
 rm(MT_id)
 
-# # Doublet test
-# sce_dbl <- scDblFinder(sce)
-# table(sce_dbl$scDblFinder.class)  # be careful to record the threshold
+
+
+# # Doublet removal###############################################################
+# set.seed(seed) # different seed varies a bit (can vary more than 10 cells...)
+# dbl.out <- capture.output(sce_dbl <- scDblFinder(sce) , type = "message")
+# thres <- as.numeric(gsub("[^0-9.]", "", dbl.out[grepl('Threshold', dbl.out)]))
+# thres
+# table(sce_dbl$scDblFinder.class)
+# 
+# # histogram of doublet scores
 # ggplot(data.frame(class=sce_dbl$scDblFinder.class, score=sce_dbl$scDblFinder.score)) +
-#   geom_histogram(aes(x=score),bins = 100, color='grey80') + 
-#   xlab('Doublet score') +
+#   geom_histogram(aes(x=score),bins = 100, color='grey80') +
+#   geom_vline(aes(xintercept=thres), color = 'red', linetype="dashed") +
+#   xlab('Doublet score')
+# ggsave('figures/doublets_hist.jpg',device='jpg', width = 8, height = 5)
+# 
+# # usually doublets show higher levels of expression
+# stats <- perCellQCMetrics(sce_dbl)
+# sce_dbl$total_counts <- stats$sum/1e6
+# plotColData(sce_dbl, x="Cell.Type", y="total_counts", colour_by="scDblFinder.class") +
+#   ggtitle("Library sizes") + ylab('Total Reads Count') + xlab('Cell Type') +
+#   theme(plot.title = element_text(size=12),
+#         axis.text.x = element_text(size = 12),
+#         axis.text.y = element_text(size = 12),
+#         axis.title.x=element_text(size = 12),
+#         axis.title.y=element_text(size = 12),
+#         legend.text=element_text(size=10)) +
+#   guides(color=guide_legend("scDblFinder", title.theme = element_text(size = 12))) +
+#   scale_y_continuous(labels = c(0,
+#                                 sapply(sort(seq(5,max(sce_dbl$total_counts),5)),
+#                                        function(x){latex2exp::TeX(paste0('$',x,'\\times 10^6$'))})),
+#                      breaks = sort(c(0,seq(5,max(sce_dbl$total_counts),5))))
+# ggsave('figures/doublets_lib_size_scatter.pdf',device='pdf', width = 8, height = 8)
+# 
+# # usually doublets would appear at the periphery of the singlet cluster
+# sce_dbl <- computeSumFactors(sce_dbl, cluster = quickCluster(sce_dbl))
+# sce_dbl <- logNormCounts(sce_dbl)
+# var.dbl <- modelGeneVar(sce_dbl)
+# hvg.dbl <- getTopHVGs(var.dbl,n=2000)
+# set.seed(seed)
+# sce_dbl <- runPCA(sce_dbl, subset_row = hvg.dbl)
+# set.seed(seed)
+# sce_dbl <- runTSNE(sce_dbl, perplexity=20, dimred="PCA")
+# plotTSNE(sce_dbl, colour_by = 'scDblFinder.class', shape_by = 'Cell.Type')
+# ggsave('figures/doublets_tsne.jpg', device='jpg', width = 6, height = 5)
+# 
+# # remove doublets
 # sce[,sce_dbl$scDblFinder.class != 'doublet']
 # rm(sce_dbl)
+# rm(dbl.out)
+# rm(thres)
+# rm(stats)
+# rm(var.dbl)
+# rm(hvg.dbl)
 
-# cell QC
+
+
+# cell QC ######################################################################
 QC_stats.cell <- perCellQCMetrics(sce, subsets=list(ERCC=is.spike, Mt=is.mito))
 # or we can store the stats directly to colData 
 # by addPerCellQC(sce, subsets=list(ERCC=is.spike, Mt=is.mito))
@@ -227,7 +284,7 @@ QC_scatter <- gridExtra::grid.arrange(
 )
 ggsave('figures/QC_summary.pdf',QC_scatter, device='pdf', width = 15, height = 15)
 
-# Table summary of QC
+# Table summary of cell QC
 total.cells <- table(sce$Cell.Type)
 total.cells <- c(total.cells,Total=sum(total.cells))
 # lib size
@@ -327,7 +384,7 @@ rm(discard.prop)
 rm(keep.cells)
 rm(keep.prop)
 
-# Venn Diagram the summarizes the failures in QC
+# Venn Diagram summary of failures in cell QC
 venn <- as.data.frame(cell_filter)
 QC_venn <- ggVennDiagram(apply(venn[1:4], 2, function(x) which(x == TRUE)),
                               label_alpha=0, 
@@ -347,7 +404,7 @@ QC_venn
 ggsave('figures/QC_venn.jpg',QC_venn, device='jpg', width = 8, height = 8)
 rm(venn)
 
-# Histogram summary of QC
+# Histogram summary of cell QC
 QC_hist <- gridExtra::grid.arrange(
   ggplot(as.data.frame(QC_stats.cell), aes(x=sum/1e6))+
     geom_histogram(color='grey80',bins=50) +
@@ -431,11 +488,14 @@ sce <- sce[,assays(sce)$counts[grepl('^Pou5f1$',rownames(sce)),] != 0]
 sce <- sce[,assays(sce)$counts[grepl('^Sox2$',rownames(sce)),] != 0]
 sce
 
-# gene filtering
+
+
+# gene filtering ###############################################################
 # remove spikes
 sce <- splitAltExps(sce, is.spike)
 altExpNames(sce) <- 'spikes'
 sce
+
 # remove low expression genes (express in less than 3 cells)
 QC_stats.gene <- perFeatureQCMetrics(sce)
 detected_cell_prop.hist <- ggplot(as.data.frame(QC_stats.gene), aes(x=detected)) +
@@ -453,18 +513,23 @@ sum(rowSums(assays(sce)$counts > 0) >= 3)  # check how many genes are left
 sce <- sce[rowSums(assays(sce)$counts > 0) >= 3,]
 sce
 
-# Normalisation
+
+
+# Normalisation ################################################################
 sce <- computeSumFactors(sce, cluster = quickCluster(sce))
 sce <- logNormCounts(sce)
 sce  # assays(sce) has 'logcounts'
 
-# check oct4 variation
+
+
+# check oct4 variation #########################################################
 # raw counts
 oct4_variation_rawcounts <- plotExpression(sce,'Pou5f1',x='Cell.Type',exprs_values = "counts") +
   xlab('Cell Type') + ylab('Raw Counts') + 
   ggtitle('Oct4 expression level (raw counts)')
 oct4_variation_rawcounts
 ggsave('figures/oct4_variation_rawcounts.jpg',oct4_variation_rawcounts, device='jpg', width = 8, height = 10)
+
 # log counts
 oct4_variation_logcounts <- plotExpression(sce,'Pou5f1',x='Cell.Type',exprs_values = "logcounts") +
   xlab('Cell Type') + ylab('Log Counts') + 
@@ -472,10 +537,13 @@ oct4_variation_logcounts <- plotExpression(sce,'Pou5f1',x='Cell.Type',exprs_valu
 oct4_variation_logcounts
 ggsave('figures/oct4_variation_logcounts.jpg',oct4_variation_logcounts, device='jpg', width = 8, height = 10)
 
-# correlation (scatter plot)
+
+
+# famous correlated & non-correlated genes(scatter plot) #######################
 # positive control
 targets <- c('Nanog', 'Sox2','Klf4','Zfp42','Utf1','Esrrb')
 #rownames(sce)[grepl('Esrrb',rownames(sce))]
+
 # raw counts
 oct4_corr_scatter_rawcounts <- plotExpression(sce,targets,x='Pou5f1',exprs_values = "counts",color_by = 'Cell.Type') + 
   xlab('Oct4 expression level') + 
@@ -484,6 +552,7 @@ oct4_corr_scatter_rawcounts <- plotExpression(sce,targets,x='Pou5f1',exprs_value
   guides(color=guide_legend("Cell Type"))
 oct4_corr_scatter_rawcounts
 ggsave('figures/oct4_corr_scatter_rawcounts.jpg',oct4_corr_scatter_rawcounts, device='jpg', width = 8, height = 10)
+
 # log counts
 oct4_corr_scatter_logcounts <- plotExpression(sce,targets,x='Pou5f1',exprs_values = "logcounts",color_by = 'Cell.Type') + 
   xlab('Oct4 expression level') + 
@@ -493,8 +562,11 @@ oct4_corr_scatter_logcounts <- plotExpression(sce,targets,x='Pou5f1',exprs_value
 oct4_corr_scatter_logcounts
 ggsave('figures/oct4_corr_scatter_logcounts.jpg',oct4_corr_scatter_logcounts, device='jpg', width = 8, height = 10)
 rm(targets)
+
 # negative control
 hk_genes <- c('Actb','Tbp','Pgk1','Ppia','Rpl38','Hmbs')
+
+# raw counts
 oct4_corr_scatter_rawcounts.hk <- plotExpression(sce,hk_genes,x='Pou5f1',exprs_values = "counts",color_by = 'Cell.Type') + 
   xlab('Oct4 expression level') + 
   ylab('Expression level (raw counts)') +
@@ -502,6 +574,7 @@ oct4_corr_scatter_rawcounts.hk <- plotExpression(sce,hk_genes,x='Pou5f1',exprs_v
   guides(color=guide_legend("Cell Type"))
 oct4_corr_scatter_rawcounts.hk
 ggsave('figures/oct4_corr_scatter_rawcounts_hk.jpg',oct4_corr_scatter_rawcounts.hk, device='jpg', width = 8, height = 10)
+
 # log counts
 oct4_corr_scatter_logcounts.hk <- plotExpression(sce,hk_genes,x='Pou5f1',exprs_values = "logcounts",color_by = 'Cell.Type') + 
   xlab('Oct4 expression level') + 
@@ -511,10 +584,12 @@ oct4_corr_scatter_logcounts.hk <- plotExpression(sce,hk_genes,x='Pou5f1',exprs_v
 oct4_corr_scatter_logcounts.hk
 ggsave('figures/oct4_corr_scatter_logcounts_hk.jpg',oct4_corr_scatter_logcounts.hk, device='jpg', width = 8, height = 10)
 
-# fearture selection
+
+
+# fearture selection ###########################################################
 assays(sce)$norm_counts <- 2^(logcounts(sce))-1
 # scran HVG (model gene variance by trend)
-#some how modelGeneVarWithSpikes(sce,'spikes') fails...
+#some how modelGeneVarWithSpikes(sce,'spikes') failed here...
 var.out <- modelGeneVar(sce)
 features_hvg <- getTopHVGs(var.out,n=50)
 deconvolution_HVG <- ggplot(as.data.frame(var.out), aes(x=mean, y=total)) + geom_point() +
@@ -529,27 +604,29 @@ deconvolution_HVG <- ggplot(as.data.frame(var.out), aes(x=mean, y=total)) + geom
   ylab('Total Variance of log-expression')
 deconvolution_HVG
 ggsave('figures/deconvolution_HVG.jpg', deconvolution_HVG, device='jpg', width = 10, height = 6)
+
 # log counts of HVG
 features_hvg <- getTopHVGs(var.out,n=100)
-top100_hvg.log <- plotExpression(sce,features_hvg,exprs_values = "logcounts") + ylim(0,20)
-top100_hvg.log
-ggsave('figures/top100_hvg_log.jpg',top100_hvg.log, device='jpg', width = 20, height = 6)
+plotExpression(sce,features_hvg,exprs_values = "logcounts") + ylim(0,20)
+ggsave('figures/top100_hvg_log.jpg', device='jpg', width = 20, height = 6)
+
 # normalised raw counts of HVG
-top100_hvg.raw <- plotExpression(sce,features_hvg,exprs_values = "norm_counts") + ylim(0,2e+5)
-top100_hvg.raw
-ggsave('figures/top100_hvg_raw.jpg',top100_hvg.raw, device='jpg', width = 20, height = 6)
+plotExpression(sce,features_hvg,exprs_values = "norm_counts") + ylim(0,2e+5)
+ggsave('figures/top100_hvg_raw.jpg',device='jpg', width = 20, height = 6)
+
 
 # Deviance (select genes that are both highly expressed and highly variable)
 dev <- rowData(devianceFeatureSelection(sce,assay = "counts", fam='binomial'))$binomial_deviance
+
 # log counts of deviance
 features_dev <- names(dev[order(dev,decreasing=TRUE)])[1:100]
-top100_dev.log <- plotExpression(sce,features_dev,exprs_values = "logcounts")+ ylim(0,20)
-top100_dev.log
-ggsave('figures/top100_dev_log.jpg',top100_dev.log, device='jpg', width = 20, height = 6)
+plotExpression(sce,features_dev,exprs_values = "logcounts")+ ylim(0,20)
+ggsave('figures/top100_dev_log.jpg',device='jpg', width = 20, height = 6)
+
 # normalised raw counts of deviance
-top100_dev.raw <- plotExpression(sce,features_dev,exprs_values = "norm_counts") + ylim(0,2e+5)
-top100_dev.raw
-ggsave('figures/top100_dev_raw.jpg',top100_dev.raw, device='jpg', width = 20, height = 6)
+plotExpression(sce,features_dev,exprs_values = "norm_counts") + ylim(0,2e+5)
+ggsave('figures/top100_dev_raw.jpg', device='jpg', width = 20, height = 6)
+
 
 # check intersection between features selected by HVG and DEV
 features_hvg <- getTopHVGs(var.out,n=2000)
@@ -561,6 +638,7 @@ features_venn <- ggVennDiagram(data.frame(features_dev=features_dev,features_hvg
   theme(plot.title = element_text(hjust = 0.5))
 features_venn
 ggsave("figures/features_venn.jpg",features_venn,device='jpg', width = 6, height = 6)
+
 # mean-variance plot
 meanvar_plotdata <- function(sce,G=2000){
   #this function is copied from: https://github.com/willtownes/scrna2019
@@ -607,14 +685,11 @@ rm(test.sce)
 rm(meanvar_plotdata)
 rm(df)
 
-# Dimensionality reduction
-seed <- 1000
-set.seed(seed)
-#set.seed(NULL)
 
-# tSNE perplexity test
+
+# tSNE perplexity test #########################################################
 # HVG:1000-4000 + perplexity:5,10,15,20,25,30,40,50 (8 rows, 4 cols) 
-perplex_test.func <- function(sce,feat_num, perplex_num, ref){
+perplex_test.func <- function(sce,feat_num, perplex_num, ref, seed){
   # feat_num and perplex_num are both arrays of numbers
   r <- list()
   for(i in feat_num){
@@ -623,7 +698,10 @@ perplex_test.func <- function(sce,feat_num, perplex_num, ref){
     p <- list()
     for(j in perplex_num){
       print(j)
-      sce_hvg <- runTSNE(sce,perplexity=j, subset_row = features_hvg)
+      set.seed(seed)
+      sce_hvg <- runPCA(sce,subset_row = features_hvg)
+      set.seed(seed)
+      sce_hvg <- runTSNE(sce_hvg,perplexity=j, dimred="PCA")
       p[[as.character(j)]] <- plotReducedDim(sce_hvg, "TSNE", colour_by = 'Cell.Type') +
                               ggtitle(paste0('Perplexity: ', j))
     }
@@ -635,20 +713,24 @@ perplex_test.func <- function(sce,feat_num, perplex_num, ref){
           theme(plot.margin = margin(0.1,0.5,0.1,0.1, "cm"))
   return(plot)
 }
-perplex_test <- perplex_test.func(sce,c(1000,2000,3000,4000), c(5,10,15,20,25,30,40,50), var.out)
-perplex_test
-ggsave('figures/perplex_test.jpg',perplex_test, device='jpg', width = 20, height = 30)
+perplex_test.func(sce,c(1000,2000,3000,4000), c(5,10,15,20,25,30,40,50), var.out, seed=seed)
+ggsave('figures/perplex_test.jpg',device='jpg', width = 20, height = 30)
 
-# different number of features
+
+
+# number of features test ######################################################
 # by hvg
-reduce_dim_hvg.func <- function(sce,num,ref){
+reduce_dim_hvg.func <- function(sce,num,ref, seed){
   # num is an array of numbers
   p <- list()
   for(n in num){
     print(n)
     features_hvg <- getTopHVGs(ref,n=n)
+    set.seed(seed)
     sce_hvg <- runPCA(sce,subset_row = features_hvg)
-    sce_hvg <- runTSNE(sce_hvg,perplexity=20, subset_row = features_hvg)
+    set.seed(seed)
+    sce_hvg <- runTSNE(sce_hvg,perplexity=20, dimred="PCA")
+    set.seed(seed)
     sce_hvg <- runUMAP(sce_hvg, subset_row = features_hvg)
     p[[as.character(n)]] <- annotate_figure(ggarrange(
       plotReducedDim(sce_hvg, "PCA", colour_by = 'Cell.Type')
@@ -668,7 +750,7 @@ reduce_dim_hvg.func <- function(sce,num,ref){
   r[['legend']] <- get_legend(plotReducedDim(sce_hvg, "PCA", colour_by = 'Cell.Type'))
   return(r)
 }
-results <- reduce_dim_hvg.func(sce,c(100,500,1000,1500,2000,3000,4000,5000),ref=var.out)
+results <- reduce_dim_hvg.func(sce,c(100,500,1000,1500,2000,3000,4000,5000),ref=var.out, seed=seed)
 dim_reduce_hvg <- ggarrange(plotlist=results[['plots']], 
                             ncol=4, nrow=2, common.legend = TRUE, legend="right", 
                             legend.grob = results[['legend']]) +
@@ -676,15 +758,19 @@ dim_reduce_hvg <- ggarrange(plotlist=results[['plots']],
 dim_reduce_hvg
 ggsave('figures/dim_reduce_hvg.jpg',dim_reduce_hvg, device='jpg', width = 20, height = 25)
 rm(results)
+
 # by dev
-reduce_dim_dev.func <- function(sce,num,ref){
+reduce_dim_dev.func <- function(sce,num,ref, seed){
   # num is an array of numbers
   p <- list()
   for(n in num){
     print(n)
     features_dev <- names(ref[order(ref,decreasing=TRUE)])[1:n]
+    set.seed(seed)
     sce_dev <- runPCA(sce,subset_row = features_dev)
-    sce_dev <- runTSNE(sce_dev,perplexity=20, subset_row = features_dev)
+    set.seed(seed)
+    sce_dev <- runTSNE(sce_dev,perplexity=20, dimred="PCA")
+    set.seed(seed)
     sce_dev <- runUMAP(sce_dev, subset_row = features_dev)
     p[[as.character(n)]] <- annotate_figure(ggarrange(
       plotReducedDim(sce_dev, "PCA", colour_by = 'Cell.Type')
@@ -704,7 +790,7 @@ reduce_dim_dev.func <- function(sce,num,ref){
   r[['legend']] <- get_legend(plotReducedDim(sce_dev, "PCA", colour_by = 'Cell.Type'))
   return(r)
 }
-results <- reduce_dim_dev.func(sce,c(100,500,1000,1500,2000,3000,4000,5000),ref=dev)
+results <- reduce_dim_dev.func(sce,c(100,500,1000,1500,2000,3000,4000,5000),ref=dev, seed=seed)
 dim_reduce_dev <- ggarrange(plotlist=results[['plots']], 
                             ncol=4, nrow=2, common.legend = TRUE, legend="right", 
                             legend.grob = results[['legend']]) +
@@ -712,105 +798,40 @@ dim_reduce_dev <- ggarrange(plotlist=results[['plots']],
 dim_reduce_dev
 ggsave('figures/dim_reduce_dev.jpg',dim_reduce_dev, device='jpg', width = 20, height = 25)
 rm(results)
+# check seurat clustering part (sweep_para function) to choose the right number!
 
-# PC methods selection
-# elbow
-features_dev <- names(dev[order(dev,decreasing=TRUE)])[1:5000]
-features_hvg <- getTopHVGs(var.out,n=5000)
-sce_dev <- runPCA(sce,subset_row = features_dev)
-percent.var <- attr(reducedDim(sce_dev), "percentVar")
-PC_num.elbow <- findElbowPoint(percent.var)
-PC_num.elbow
-# global maximum likelihood (based on translated Poisson mixture model)
-PC_num.gml <- intrinsicDimension::maxLikGlobalDimEst(reducedDim(sce_dev),k=10)
-PC_num.gml
-PC_num.gml <- round(PC_num.gml$dim.est,0)
-PC_num_sele <- ggplot(data.frame(variance_percent = percent.var, PCs=1:length(percent.var))) + 
-  geom_point(aes(x=PCs, y=variance_percent)) +
-  geom_vline(xintercept = PC_num.elbow, color = 'blue', linetype="dashed") +
-  geom_vline(xintercept = PC_num.gml, color = 'coral', linetype="dashed") +
-  annotate('text',x=PC_num.elbow, y=5,label='elbow point',color = 'red') +
-  annotate('text',x=PC_num.gml, y=4,label='global maximum likelihood',color = 'red') +
-  ylab("Variance explained (%)")
-PC_num_sele
-ggsave('figures/PC_num_sele.jpg',PC_num_sele, device='jpg', width = 8, height = 6)
-rm(percent.var)
 
-# clustering
-sce_dev <- runPCA(sce,ncomponents=PC_num.gml, subset_row = features_dev)
-sce_dev <- runTSNE(sce_dev, perplexity=20, subset_row = features_dev)
-plotReducedDim(sce_dev, "TSNE", colour_by="Cell.Type")
 
-# # cluster by scran (using Leiden/Louvain/walktrap algorithm)
-# cluster.ld <- clusterCells(sce_dev, use.dimred="PCA", BLUSPARAM=NNGraphParam(k=10, cluster.fun='leiden', cluster.args = list(resolution = 0.8)))
-# table(cluster.ld)
-# cluster.wt <- clusterCells(sce_dev, use.dimred="PCA", BLUSPARAM=NNGraphParam(k=10, type="rank", cluster.fun="walktrap"))
-# table(cluster.wt)
-# tab <- table(Walktrap=cluster.wt, Leiden=cluster.ld)  # comparison
-# plot
-# colLabels(sce_dev) <- cluster.ld
-# plotReducedDim(sce_dev, "TSNE", colour_by="label",text_by="label")
-# 
-# # Find Markers by scran
-# marker.info <- scoreMarkers(sce_dev, cluster.ld)
-# # chose the upregulated marker genes
-# #head(rownames(marker.info[[2]])[order(marker.info[[2]]$mean.AUC, decreasing=TRUE)],10)
-# # chose the downregulated marker genes
-# head(rownames(marker.info[[2]])[order(marker.info[[2]]$mean.AUC, decreasing=FALSE)],10)
-# rm(marker.info)
+# # PC number selection methods ##################################################
+# # here just select a feature number randomly (e.g. 2000)  
+# # elbow
+# features_dev <- names(dev[order(dev,decreasing=TRUE)])[1:4000]
+# #features_hvg <- getTopHVGs(var.out,n=4000)
+# set.seed(seed)
+# sce_dev <- runPCA(sce,subset_row = features_dev)
+# percent.var <- attr(reducedDim(sce_dev), "percentVar")
+# PC_num.elbow <- findElbowPoint(percent.var)
+# PC_num.elbow
+# # global maximum likelihood (based on translated Poisson mixture model)
+# PC_num.gml <- intrinsicDimension::maxLikGlobalDimEst(reducedDim(sce_dev),k=10)
+# PC_num.gml
+# PC_num.gml <- round(PC_num.gml$dim.est,0)
+# ggplot(data.frame(variance_percent = percent.var, PCs=1:length(percent.var))) + 
+#   geom_point(aes(x=PCs, y=variance_percent)) +
+#   geom_vline(xintercept = PC_num.elbow, color = 'blue', linetype="dashed") +
+#   geom_vline(xintercept = PC_num.gml, color = 'coral', linetype="dashed") +
+#   annotate('text',x=PC_num.elbow, y=5,label='elbow point',color = 'red') +
+#   annotate('text',x=PC_num.gml, y=4,label='global maximum likelihood',color = 'red') +
+#   ylab("Variance explained (%)")
+# ggsave('figures/PC_num_sele.jpg',device='jpg', width = 8, height = 6)
+# rm(percent.var)
 
-# # cluster by SC3 package (k-mean based)
-# sce_dev_SC3 <- sce_dev
-# rowData(sce_dev_SC3)$feature_symbol <- rownames(sce_dev_SC3)
-# sce_dev_SC3 <- sc3(sce_dev_SC3, gene_filter=TRUE, ks = 3:8, biology = TRUE, rand_seed=seed,
-#                    d_region_min=0.01)
-# SC3_tsne <- plotTSNE(sce_dev_SC3,shape_by = 'Cell.Type', colour_by = 'sc3_6_clusters')
-# SC3_tsne
-# ggsave('figures/SC3_tsne.jpg', SC3_tsne, device='jpg', width = 6, height = 5)
-# rm(SC3_tsne)
-# #sc3_plot_consensus(sce_dev_SC3, k = 6, show_pdata = c("Cell.Type", "sc3_6_clusters"))
-# # evaluate the best clustering number for SC3 (check the Silhouette score in picture!)
-# eva_SC3_cluster <- function(sce,cluster_num){
-#   for(i in cluster_num){
-#     filename <- paste0('figures/SC3_sil_',i,'.png')
-#     png(filename,1000,1000)
-#     sc3_plot_silhouette(sce, k = i)
-#     dev.off()
-#   }
-# }
-# eva_SC3_cluster(sce_dev_SC3,3:8)
-# #sc3_plot_cluster_stability(sce_dev_SC3, k = 6)
-# #sc3_plot_expression(sce_dev_SC3, k = 6,show_pdata = c("sc3_6_clusters","Cell.Type"))
-# #sc3_plot_de_genes(sce_dev_SC3, k = 6,show_pdata = c("sc3_6_clusters", "Cell.Type"))
-# SC3_markerplot <- sc3_plot_markers(sce_dev_SC3, k = 6, auroc = 0.8, p.val = 0.01,
-#                                    show_pdata = c("sc3_6_clusters", "Cell.Type"))
-# ggsave('figures/SC3_markerplot.jpg', SC3_markerplot, device='jpg', width = 10, height = 10)
-# cluster.sc3 <- colData(sce_dev_SC3)$sc3_6_clusters
-# colLabels(sce_dev_SC3) <- cluster.sc3
-# 
-# # Find Markers by SC3 (not as good as seurat)
-# find_marker_sc3 <- function(sce, k, padj, auroc, clust){
-#   clust_name <- paste0('sc3_',k,'_markers_clusts')
-#   padj_name <- paste0('sc3_',k,'_markers_padj')
-#   auroc_name <- paste0('sc3_',k,'_markers_auroc')
-#   df <- rowData(sce)[,c(clust_name, padj_name, auroc_name)]
-#   df[is.na(df[[clust_name]]) |
-#      is.na(df[[padj_name]]) |
-#      is.na(df[[auroc_name]]),] <- 0
-#   df <- df[df[[clust_name]] == clust &
-#            df[[padj_name]] < padj &
-#            df[[auroc_name]] > auroc,]
-#   df <- df[order(df[[padj_name]], decreasing = FALSE),]
-#   markers <- rownames(df)
-#   return(markers)
-# }
-# sc3_markers <- find_marker_sc3(sce_dev_SC3, 6, padj=0.01, auroc=0.7, clust=1)
-# sc3_markers 
-# plotHeatmap(sce_dev_SC3, exprs_values = "logcounts", 
-#             order_columns_by=c("label", "Cell.Type"), features=c(sc3_markers), 
-#             cluster_rows = FALSE, center=TRUE)
 
+
+# cluster cells (deviance feature) #############################################
 # cluster by seurat package (using Leiden/Louvain algorithm)
+#features_hvg <- getTopHVGs(var.out,n=5000)
+features_dev <- names(dev[order(dev,decreasing=TRUE)])[1:5000]
 sce_seurat <- sce_origin
 sce_seurat <- sce_seurat[, !cell_filter$discard]
 sce_seurat <- sce_seurat[,assays(sce_seurat)$counts[grepl('^Pou5f1$',rownames(sce_seurat)),] != 0]
@@ -820,16 +841,13 @@ sce_seurat <- sce_seurat[rowSums(assays(sce_seurat)$counts > 0) >= 3,]
 sce_seurat
 sce_seurat <- computeSumFactors(sce_seurat, cluster = quickCluster(sce_seurat))
 sce_seurat <- logNormCounts(sce_seurat)
-sce_seurat <- runPCA(sce_seurat,ncomponents=PC_num.gml, subset_row = features_dev[1:1000])
-sce_seurat <- runTSNE(sce_seurat, perplexity=20, subset_row = features_dev)
-plotTSNE(sce_seurat, colour_by = 'Cell.Type')  # make sure sce_seurat TSNE plot is the same as sce_dev/sce_hvg
 seurat <- as.Seurat(sce_seurat, counts = "counts", data = "logcounts")
 #seurat <- FindVariableFeatures(seurat, selection.method = "vst", nfeatures = 2000)
 #VariableFeatures(seurat)[1:100]
 #VlnPlot(object = seurat, features = c('Pou5f1','Nanog'))
 seurat <- ScaleData(seurat, features = rownames(seurat))
 
-# select the best resolution of leiden algorithm
+# test for resolution of leiden and features number (can also test other parameters!)
 sweep_para <- function(seurat, seed, features, res, feature_num){
   para_res <- c()
   sil_score <- c()
@@ -839,9 +857,9 @@ sweep_para <- function(seurat, seed, features, res, feature_num){
   for(j in feature_num){
     print(paste0('feature number = ', j))
     seurat <- RunPCA(seurat, features = features[1:j], seed.use = seed)
-    seurat_PC_nums <- intrinsicDimension::maxLikGlobalDimEst(seurat[['pca']]@cell.embeddings, k = 10)
-    seurat_PC_nums
-    PC_sele <- round(seurat_PC_nums$dim.est,0)
+    PC_num.gml <- intrinsicDimension::maxLikGlobalDimEst(seurat[['pca']]@cell.embeddings, k = 10)
+    PC_num.gml
+    PC_sele <- round(PC_num.gml$dim.est,0)
     seurat <- FindNeighbors(seurat, dims = 1:PC_sele)
     for(i in res){
       print(paste0('res = ', i))
@@ -872,25 +890,25 @@ ggplot(out, aes(x=res,y=sil_score,label=paste0('(',res,', ',round(sil_score,3),'
   xlab('Leiden Resolution') +
   guides(color=guide_legend(title="Feature Number")) +
   scale_color_brewer(palette="Paired")
-ggsave('figures/leiden_para_1.jpg',device='jpg', width = 8, height = 5)
+ggsave('figures/leiden_para_1_dev.jpg',device='jpg', width = 8, height = 6)
 ggplot(out, aes(x = factor(feature_num), y = sil_score, 
                 label=paste0('(',res,', ',round(sil_score,3),')'))) +
   geom_bar(stat = "summary", fun = "var")+
   ylab('Variance of Silhouette') +
   xlab('Feature Number')
-ggsave('figures/leiden_para_2.jpg',device='jpg', width = 8, height = 5)
+ggsave('figures/leiden_para_2_dev.jpg',device='jpg', width = 8, height = 5)
 rm(out)
 
-# comparison of cluster results
+# comparison of different cluster results (different resolutions)
 compare_para <- function(seurat, seed, resolution, feature_num){
   clusters <- list()
   for(i in c(1,2)){
     res <- resolution[i]
     ft_num <- feature_num[i]
     seurat <- RunPCA(seurat, features = features_dev[1:ft_num], seed.use = seed)
-    seurat_PC_nums <- intrinsicDimension::maxLikGlobalDimEst(seurat[['pca']]@cell.embeddings, k = 10)
-    seurat_PC_nums <- round(seurat_PC_nums$dim.est,0)
-    seurat <- FindNeighbors(seurat, dims = 1:seurat_PC_nums)
+    PC_num.gml <- intrinsicDimension::maxLikGlobalDimEst(seurat[['pca']]@cell.embeddings, k = 10)
+    PC_num.gml <- round(PC_num.gml$dim.est,0)
+    seurat <- FindNeighbors(seurat, dims = 1:PC_num.gml)
     seurat <- FindClusters(seurat, resolution = res, algorithm = 4)
     name <- paste0('originalexp_snn_res.',res)
     cluster <- seurat@meta.data[[name]]
@@ -902,60 +920,93 @@ com_para_r <- compare_para(seurat, seed, c(0.7,0.7),c(2500, 4000))
 table(com_para_r[[1]],com_para_r[[2]])
 rm(com_para_r)
 
-# select the best resolution and feature number!!
-res_sele <- 0.7
-seurat <- RunPCA(seurat, features = features_dev[1:2500], seed.use = seed)  # here the features are chosen by deviance
-#seurat <- RunTSNE(seurat,seed.use = seed, perplexity = 20)
-DimPlot(seurat, reduction = "TSNE" , group.by = 'Cell.Type',label = TRUE)
-#DimPlot(seurat, reduction = "tsne" , group.by = 'Cell.Type',label = TRUE)
+# select the best feature number and best PC number
+feat_num_sele <- 4000
+features_dev <- names(dev[order(dev,decreasing=TRUE)])[1:feat_num_sele]
+seurat <- RunPCA(seurat, features = features_dev, seed.use = seed)  # here the features are chosen by deviance
 #DimHeatmap(seurat, reduction = "pca",dims = 1:3)
-ElbowPlot(seurat)
-seurat_PC_nums <- intrinsicDimension::maxLikGlobalDimEst(seurat[['pca']]@cell.embeddings, k = 10)
-seurat_PC_nums
-seurat_PC_nums <- round(seurat_PC_nums$dim.est,0)
-seurat <- FindNeighbors(seurat, dims = 1:seurat_PC_nums)
-seurat <- FindClusters(seurat, resolution = res_sele, algorithm = 4)  # algorithm 4 is "Leiden"; 1 is "Louvain"
-DimPlot(seurat, reduction = "TSNE" ,label = TRUE, shape.by = 'Cell.Type')
+PC_num.elbow <- findElbowPoint(seurat[['pca']]@stdev)
+PC_num.elbow
+PC_num.gml <- intrinsicDimension::maxLikGlobalDimEst(seurat[['pca']]@cell.embeddings, k = 10)
+PC_num.gml
+PC_num.gml <- round(PC_num.gml$dim.est,0)
+PC_num.gml
+ElbowPlot(seurat) +
+  geom_vline(xintercept = PC_num.elbow, color = 'blue', linetype="dashed") +
+  geom_vline(xintercept = PC_num.gml, color = 'coral', linetype="dashed") +
+  annotate('text',x=PC_num.elbow, y=10,label='elbow point',color = 'red') +
+  annotate('text',x=PC_num.gml, y=10,label='global maximum likelihood',color = 'red')
+ggsave('figures/PC_num_sele.jpg',device='jpg', width = 10, height = 6)
+seurat <- RunTSNE(seurat, seed.use = seed, perplexity = 20, dims = 1:PC_num.gml)
+DimPlot(seurat, reduction = "tsne" , group.by = 'Cell.Type')
 #ggsave('figures/leiden_tsne.jpg', device='jpg', width = 8, height = 7)
+seurat <- RunUMAP(seurat,seed.use = seed, dims = 1:PC_num.gml)
+DimPlot(seurat, reduction = "umap" , group.by = 'Cell.Type')
+
+#  convey those dim-reduction plots to a SCE object (to use some functions in bioconductor)
+sce_dev <- as.SingleCellExperiment(seurat)
+plotReducedDim(sce_dev, "TSNE", colour_by="Cell.Type")  # make sure it's the same as seurat's tSNE
+counts(sce_dev) <- as.matrix(counts(sce_dev))
+assays(sce_dev)$norm_counts <- 2^(logcounts(sce_dev))-1
+sce_dev
+
+# select the best resolution and cluster cells using Leiden algorithm
+res_sele <- 0.7
+seurat <- FindNeighbors(seurat, dims = 1:PC_num.gml)
+seurat <- FindClusters(seurat, resolution = res_sele, algorithm = 4)  # algorithm 4 is "Leiden"; 1 is "Louvain"
+DimPlot(seurat, reduction = "tsne", label = TRUE, shape.by = 'Cell.Type')
+
+# pass the clustering result back to SCE object
+cluster.leiden <- seurat@meta.data[[paste0('originalexp_snn_res.',res_sele)]]
+colLabels(sce_dev) <- cluster.leiden
+
+# plot marker genes of each cluster (heatmap)
 group_marker <- FindAllMarkers(seurat, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
 group_marker %>% dplyr::filter(p_val_adj < 0.01) %>%
   group_by(cluster) %>%
   dplyr::slice_min(n = 10, order_by = p_val_adj) -> top10
 DoHeatmap(seurat,features=top10$gene, slot = "scale.data") #+ scale_fill_virdis()
-ggsave('figures/leiden_markers.jpg', device='jpg', width = 10, height = 8)
 #FeaturePlot(seurat, reduction = 'TSNE', features=top10[top10['cluster']==1,]$gene[1:4])
-cluster.leiden <- seurat@meta.data[[paste0('originalexp_snn_res.',res_sele)]]
-colLabels(sce_dev) <- cluster.leiden
-# using pretty heatmap for plotting
-plotHeatmap(sce_dev, exprs_values = "logcounts", order_columns_by=c("label", "Cell.Type"), 
-            features=top10$gene, cluster_rows = FALSE, center = TRUE ,
-            color = colorRampPalette(rev(RColorBrewer::brewer.pal(6,"RdYlBu")))(100))
+leiden_markers <- plotHeatmap(sce_dev, exprs_values = "logcounts", 
+                              order_columns_by=c("label", "Cell.Type"), 
+                              features=top10$gene, cluster_rows = FALSE, center = TRUE,
+                              gaps_col = cumsum(as.numeric(table(cluster.leiden))),
+                              gaps_row = seq(0,50,10), 
+                              color = colorRampPalette(rev(RColorBrewer::brewer.pal(10,"RdYlBu")))(40))
+ggsave('figures/leiden_markers.jpg', leiden_markers, device='jpg', width = 10, height = 8)
+#colorRampPalette(rev(RColorBrewer::brewer.pal(10,"RdYlBu")))(100)
+#colorRampPalette(rev(RColorBrewer::brewer.pal(11,"RdBu")))(100)
+#colorRampPalette(c(rev(RColorBrewer::brewer.pal(9,'Blues')), RColorBrewer::brewer.pal(9,'Reds')))(100)
+#colorRampPalette(c('#fc00fc','black','#fcfc00'))(100)
 
-# Find markers between selected two groups
-#FindMarkers(seurat, ident.1 = 1, min.pct = 0.25, only.pos = TRUE)  # compare to the rest of cells
-group_diff <- FindMarkers(seurat, ident.1 = 2, ident.2 = 5, min.pct = 0.25)
-head(group_diff)
-group_diff <- group_diff[group_diff$p_val_adj < 0.01, ]
-nrow(group_diff)
-write.csv(group_diff,'figures/group_diff_serum.csv',row.names = TRUE)
-FeaturePlot(seurat, features=rownames(group_diff[1:20,]))
-ggsave('figures/group_diff_serum_1.jpg', device='jpg', width = 17, height = 15)
-#DoHeatmap(seurat,features=rownames(group_diff[1:50,]), slot = "scale.data")
-group_diff_serum_2 <- plotHeatmap(sce_dev, exprs_values = "logcounts", order_columns_by=c("label", "Cell.Type"), 
-            features=rownames(group_diff[1:50,]), cluster_rows = FALSE, center = TRUE ,
-            color = colorRampPalette(c('#fc00fc','black','#fcfc00'))(100), 
-            zlim = c(-3,3), gaps_col = cumsum(as.numeric(table(cluster.leiden))))
-ggsave('figures/group_diff_serum_2.jpg', group_diff_serum_2, device='jpg', width = 12, height = 10)
-colLabels(sce_seurat) <- cluster.leiden
-rm(sce_seurat)
-rm(group_diff)
-rm(group_marker)
-rm(top10)
-rm(seurat_PC_nums)
-rm(res_sele)
-rm(group_diff_serum_2)
+# # Find markers between selected two groups (here we use 2 clsuters in 'serum' group)
+# #FindMarkers(seurat, ident.1 = 1, min.pct = 0.25, only.pos = TRUE)  # compare to the rest of cells
+# group_diff <- FindMarkers(seurat, ident.1 = 3, ident.2 = 5, min.pct = 0.25)
+# head(group_diff)
+# group_diff <- group_diff[group_diff$p_val_adj < 0.01, ]
+# nrow(group_diff)
+# write.csv(group_diff,'figures/group_diff_serum.csv',row.names = TRUE)
+# 
+# # show difference of expression on tSNE plot
+# FeaturePlot(seurat, features=rownames(group_diff[1:20,]))
+# ggsave('figures/group_diff_serum_1.jpg', device='jpg', width = 17, height = 15)
+# 
+# # seperate into two groups based on positive/negative fold change
+# up_reg <- group_diff[group_diff$avg_log2FC > 0,]
+# down_reg <- group_diff[group_diff$avg_log2FC < 0,]
+# 
+# # show difference of expression on heatmap
+# #DoHeatmap(seurat,features=rownames(group_diff[1:50,]), slot = "scale.data")
+# group_diff_serum_2 <- plotHeatmap(sce_dev[,sce_dev$Cell.Type=='serum'], 
+#                                   exprs_values = "logcounts", order_columns_by=c("label", "Cell.Type"), 
+#                                   features=rownames(rbind(up_reg[1:25,], down_reg[1:25,])), 
+#                                   cluster_rows = FALSE, center = TRUE, zlim = c(-9,9), 
+#                                   color = colorRampPalette(rev(RColorBrewer::brewer.pal(10,"RdYlBu")))(40), 
+#                                   gaps_col = cumsum(as.numeric(table(cluster.leiden))[c(3,5)]),
+#                                   gaps_row = c(25,50))
+# ggsave('figures/group_diff_serum_2.jpg', group_diff_serum_2, device='jpg', width = 12, height = 10)
 
-# details of Silhouette width
+# details of Silhouette width (and tSNE plots of clustering results)
 #sil <- cluster::silhouette(as.integer(cluster.ld), dist(reducedDim(sce_dev, "PCA")))
 detail_sil <- function(res, seurat, PC_sele){
   for(i in res){
@@ -964,6 +1015,7 @@ detail_sil <- function(res, seurat, PC_sele){
     dir1 <- paste0('figures/leiden_res_',i,'_1.jpg')
     dir2 <- paste0('figures/leiden_res_',i,'_2.jpg')
     dir3 <- paste0('figures/leiden_res_',i,'_tsne.jpg')
+    seurat <- FindClusters(seurat, resolution = i, algorithm = 4)
     cluster <- seurat@meta.data[[paste0('originalexp_snn_res.',i)]]
     sil <- cluster::silhouette(as.integer(cluster), dist(seurat[['pca']]@cell.embeddings[,1:PC_sele]))
     sil.data <- as.data.frame(sil)
@@ -980,11 +1032,95 @@ detail_sil <- function(res, seurat, PC_sele){
       ggtitle(paste0('avarage Silhouette Width: ',round(mean(sil.data$sil_width),4))) +
       geom_vline(aes(xintercept=0), color = 'red', linetype="dashed")
     ggsave(dir2, device='jpg', width = 5, height = 4)
-    DimPlot(seurat, reduction = "TSNE" ,label = TRUE, shape.by = 'Cell.Type')
-    ggsave(dir3, device='jpg', width = 8, height = 7)
+    DimPlot(seurat, reduction = "tsne" ,label = TRUE, shape.by = 'Cell.Type')
+    ggsave(dir3, device='jpg', width = 8, height = 6)
   }
 }
-detail_sil(res=c(0.8,1.2), seurat = seurat, PC_sele=seurat_PC_nums)
+detail_sil(res=c(0.7,1.2,1.7), seurat = seurat, PC_sele=PC_num.gml)
+
+# clean up variable
+rm(group_diff)
+rm(group_marker)
+rm(top10)
+rm(group_diff_serum_2)
+rm(leiden_markers)
+rm(up_reg)
+rm(down_reg)
+rm(sce_seurat)
 
 
 
+# # cluster by scran (using Leiden/Louvain/walktrap algorithm)
+# cluster.ld <- clusterCells(sce_dev, use.dimred="PCA", BLUSPARAM=NNGraphParam(k=10, cluster.fun='leiden', cluster.args = list(resolution = 0.8)))
+# table(cluster.ld)
+# cluster.wt <- clusterCells(sce_dev, use.dimred="PCA", BLUSPARAM=NNGraphParam(k=10, type="rank", cluster.fun="walktrap"))
+# table(cluster.wt)
+# tab <- table(Walktrap=cluster.wt, Leiden=cluster.ld)  # comparison
+# plot
+# colLabels(sce_dev) <- cluster.ld
+# plotReducedDim(sce_dev, "TSNE", colour_by="label",text_by="label")
+# 
+# # Find Markers by scran
+# marker.info <- scoreMarkers(sce_dev, cluster.ld)
+# # chose the upregulated marker genes
+# #head(rownames(marker.info[[2]])[order(marker.info[[2]]$mean.AUC, decreasing=TRUE)],10)
+# # chose the downregulated marker genes
+# head(rownames(marker.info[[2]])[order(marker.info[[2]]$mean.AUC, decreasing=FALSE)],10)
+# rm(marker.info)
+
+
+# # cluster by SC3 package (k-mean based)
+# sce_dev_SC3 <- sce_dev
+# rowData(sce_dev_SC3)$feature_symbol <- rownames(sce_dev_SC3)
+# sce_dev_SC3
+# sce_dev_SC3 <- sc3(sce_dev_SC3, gene_filter=TRUE, ks = 3:8, biology = TRUE, rand_seed=seed,
+#                    d_region_min=0.01)
+# #sc3_plot_consensus(sce_dev_SC3, k = 6, show_pdata = c("Cell.Type", "sc3_6_clusters"))
+# 
+# # evaluate the best clustering number for SC3 (check the Silhouette score in picture!)
+# eva_SC3_cluster <- function(sce,cluster_num){
+#   for(i in cluster_num){
+#     filename <- paste0('figures/SC3_sil_',i,'.png')
+#     png(filename,1000,1000)
+#     sc3_plot_silhouette(sce, k = i)
+#     dev.off()
+#   }
+# }
+# eva_SC3_cluster(sce_dev_SC3,3:8)
+# #sc3_plot_cluster_stability(sce_dev_SC3, k = 6)
+# 
+# # plot cluster result
+# plotTSNE(sce_dev_SC3,shape_by = 'Cell.Type', colour_by = 'sc3_6_clusters')
+# ggsave('figures/SC3_tsne_6_clust.jpg', device='jpg', width = 6, height = 4.5)
+# #sc3_plot_expression(sce_dev_SC3, k = 6,show_pdata = c("sc3_6_clusters","Cell.Type"))
+# 
+# # markers of each cluster
+# #sc3_plot_de_genes(sce_dev_SC3, k = 6,show_pdata = c("sc3_6_clusters", "Cell.Type"))
+# SC3_markerplot <- sc3_plot_markers(sce_dev_SC3, k = 6, auroc = 0.8, p.val = 0.01,
+#                                    show_pdata = c("sc3_6_clusters", "Cell.Type"))
+# ggsave('figures/SC3_markerplot_6_clust.jpg', SC3_markerplot, device='jpg', width = 10, height = 10)
+# cluster.sc3 <- colData(sce_dev_SC3)$sc3_6_clusters
+# colLabels(sce_dev_SC3) <- cluster.sc3
+# rm(SC3_markerplot)
+# 
+# # Find Markers by SC3 (not as good as seurat)
+# find_marker_sc3 <- function(sce, k, padj, auroc, clust){
+#   clust_name <- paste0('sc3_',k,'_markers_clusts')
+#   padj_name <- paste0('sc3_',k,'_markers_padj')
+#   auroc_name <- paste0('sc3_',k,'_markers_auroc')
+#   df <- rowData(sce)[,c(clust_name, padj_name, auroc_name)]
+#   df[is.na(df[[clust_name]]) |
+#      is.na(df[[padj_name]]) |
+#      is.na(df[[auroc_name]]),] <- 0
+#   df <- df[df[[clust_name]] == clust &
+#            df[[padj_name]] < padj &
+#            df[[auroc_name]] > auroc,]
+#   df <- df[order(df[[padj_name]], decreasing = FALSE),]
+#   markers <- rownames(df)
+#   return(markers)
+# }
+# sc3_markers <- find_marker_sc3(sce_dev_SC3, 6, padj=0.01, auroc=0.7, clust=1)
+# sc3_markers
+# plotHeatmap(sce_dev_SC3, exprs_values = "logcounts",
+#             order_columns_by=c("label", "Cell.Type"), features=c(sc3_markers),
+#             cluster_rows = FALSE, center=TRUE)
