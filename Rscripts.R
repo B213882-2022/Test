@@ -26,6 +26,8 @@ library(cluster)
 library(dplyr)
 library(viridisLite)
 library(viridis)
+library(sctransform)
+library(glmGamPoi)
 
 # preparetion ##################################################################
 # set working directory
@@ -619,12 +621,12 @@ ggsave('figures/top100_hvg_raw.jpg',device='jpg', width = 20, height = 6)
 dev <- rowData(devianceFeatureSelection(sce,assay = "counts", fam='binomial'))$binomial_deviance
 
 # log counts of deviance
-features_dev <- names(dev[order(dev,decreasing=TRUE)])[1:100]
-plotExpression(sce,features_dev,exprs_values = "logcounts")+ ylim(0,20)
+features_hvg <- names(dev[order(dev,decreasing=TRUE)])[1:100]
+plotExpression(sce,features_hvg,exprs_values = "logcounts")+ ylim(0,20)
 ggsave('figures/top100_dev_log.jpg',device='jpg', width = 20, height = 6)
 
 # normalised raw counts of deviance
-plotExpression(sce,features_dev,exprs_values = "norm_counts") + ylim(0,2e+5)
+plotExpression(sce,features_hvg,exprs_values = "norm_counts") + ylim(0,2e+5)
 ggsave('figures/top100_dev_raw.jpg', device='jpg', width = 20, height = 6)
 
 
@@ -970,7 +972,7 @@ DoHeatmap(seurat,features=top10$gene, slot = "scale.data") #+ scale_fill_virdis(
 leiden_markers <- plotHeatmap(sce_dev, exprs_values = "logcounts", 
                               order_columns_by=c("label", "Cell.Type"), 
                               features=top10$gene, cluster_rows = FALSE, center = TRUE,
-                              gaps_col = cumsum(as.numeric(table(cluster.leiden))),
+                              gaps_col = cumsum(as.numeric(table(colLabels(sce_dev)))),
                               gaps_row = seq(0,50,10), 
                               color = colorRampPalette(rev(RColorBrewer::brewer.pal(10,"RdYlBu")))(40))
 ggsave('figures/leiden_markers.jpg', leiden_markers, device='jpg', width = 10, height = 8)
@@ -1002,7 +1004,7 @@ ggsave('figures/leiden_markers.jpg', leiden_markers, device='jpg', width = 10, h
 #                                   features=rownames(rbind(up_reg[1:25,], down_reg[1:25,])), 
 #                                   cluster_rows = FALSE, center = TRUE, zlim = c(-9,9), 
 #                                   color = colorRampPalette(rev(RColorBrewer::brewer.pal(10,"RdYlBu")))(40), 
-#                                   gaps_col = cumsum(as.numeric(table(cluster.leiden))[c(3,5)]),
+#                                   gaps_col = cumsum(as.numeric(table(colLabels(sce_dev)))[c(3,5)]),
 #                                   gaps_row = c(25,50))
 # ggsave('figures/group_diff_serum_2.jpg', group_diff_serum_2, device='jpg', width = 12, height = 10)
 
@@ -1019,7 +1021,7 @@ detail_sil <- function(res, seurat, PC_sele){
     cluster <- seurat@meta.data[[paste0('originalexp_snn_res.',i)]]
     sil <- cluster::silhouette(as.integer(cluster), dist(seurat[['pca']]@cell.embeddings[,1:PC_sele]))
     sil.data <- as.data.frame(sil)
-    sil.data$closest <- factor(ifelse(sil.data$sil_width > 0, cluster.ld, sil.data$neighbor))
+    sil.data$closest <- factor(ifelse(sil.data$sil_width > 0, cluster, sil.data$neighbor))
     #sil.data$cluster <- cluster.ld
     ggplot(sil.data, aes(x=cluster, y=sil_width, colour=closest)) +
       ggbeeswarm::geom_quasirandom(method="smiley") + 
@@ -1124,3 +1126,465 @@ rm(sce_seurat)
 # plotHeatmap(sce_dev_SC3, exprs_values = "logcounts",
 #             order_columns_by=c("label", "Cell.Type"), features=c(sc3_markers),
 #             cluster_rows = FALSE, center=TRUE)
+
+
+
+# features selected by HVG #####################################################
+features_hvg <- getTopHVGs(var.out,n=5000)
+#features_dev <- names(dev[order(dev,decreasing=TRUE)])[1:5000]
+sce_seurat <- sce_origin
+sce_seurat <- sce_seurat[, !cell_filter$discard]
+sce_seurat <- sce_seurat[,assays(sce_seurat)$counts[grepl('^Pou5f1$',rownames(sce_seurat)),] != 0]
+sce_seurat <- sce_seurat[,assays(sce_seurat)$counts[grepl('^Sox2$',rownames(sce_seurat)),] != 0]
+sce_seurat <- sce_seurat[!is.spike,]
+sce_seurat <- sce_seurat[rowSums(assays(sce_seurat)$counts > 0) >= 3,]
+sce_seurat
+sce_seurat <- computeSumFactors(sce_seurat, cluster = quickCluster(sce_seurat))
+sce_seurat <- logNormCounts(sce_seurat)
+seurat <- as.Seurat(sce_seurat, counts = "counts", data = "logcounts")
+#seurat <- FindVariableFeatures(seurat, selection.method = "vst", nfeatures = 2000)
+#VariableFeatures(seurat)[1:100]
+#VlnPlot(object = seurat, features = c('Pou5f1','Nanog'))
+seurat <- ScaleData(seurat, features = rownames(seurat))
+
+# test for resolution of leiden and features number (can also test other parameters!)
+sweep_para <- function(seurat, seed, features, res, feature_num){
+  para_res <- c()
+  sil_score <- c()
+  cluster_num <- c()
+  ft_num <- c()
+  PC_num <- c()
+  for(j in feature_num){
+    print(paste0('feature number = ', j))
+    seurat <- RunPCA(seurat, features = features[1:j], seed.use = seed)
+    PC_num.gml <- intrinsicDimension::maxLikGlobalDimEst(seurat[['pca']]@cell.embeddings, k = 10)
+    PC_num.gml
+    PC_sele <- round(PC_num.gml$dim.est,0)
+    seurat <- FindNeighbors(seurat, dims = 1:PC_sele)
+    for(i in res){
+      print(paste0('res = ', i))
+      para_res <- c(para_res,i)
+      seurat <- FindClusters(seurat, resolution = i, algorithm = 4)
+      cluster <- seurat@meta.data[[paste0('originalexp_snn_res.',i)]]
+      sil <- cluster::silhouette(as.integer(cluster), dist(seurat[['pca']]@cell.embeddings[,1:PC_sele]))
+      sil.data <- as.data.frame(sil)
+      score <- mean(sil.data$sil_width)
+      sil_score <- c(sil_score,score)
+      cluster_num <- c(cluster_num, length(table(cluster)))
+      ft_num <- c(ft_num, j)
+      PC_num <- c(PC_num, PC_sele)
+    }
+    cat('\n')
+  }
+  r <- data.frame(res=para_res, sil_score=sil_score, clust_num=cluster_num,
+                  feature_num=ft_num, PC_num=PC_num)
+  return(r)
+}
+out <- sweep_para(seurat, seed, features_hvg, 
+                  res=seq(0.1,2.0,0.1),
+                  feature_num = c(100, 250, 500, seq(1000,5000,500)))
+out
+ggplot(out, aes(x=res,y=sil_score,label=paste0('(',res,', ',round(sil_score,3),')'))) +
+  geom_line(aes(color = factor(feature_num))) +
+  ylab('Silhouette Score') +
+  xlab('Leiden Resolution') +
+  guides(color=guide_legend(title="Feature Number")) +
+  scale_color_brewer(palette="Paired")
+ggsave('figures/leiden_para_1_hvg.jpg',device='jpg', width = 8, height = 6)
+ggplot(out, aes(x = factor(feature_num), y = sil_score, 
+                label=paste0('(',res,', ',round(sil_score,3),')'))) +
+  geom_bar(stat = "summary", fun = "var")+
+  ylab('Variance of Silhouette') +
+  xlab('Feature Number')
+ggsave('figures/leiden_para_2_hvg.jpg',device='jpg', width = 8, height = 5)
+rm(out)
+
+# comparison of different cluster results (different resolutions)
+compare_para <- function(seurat, seed, resolution, feature_num){
+  clusters <- list()
+  for(i in c(1,2)){
+    res <- resolution[i]
+    ft_num <- feature_num[i]
+    seurat <- RunPCA(seurat, features = features_hvg[1:ft_num], seed.use = seed)
+    PC_num.gml <- intrinsicDimension::maxLikGlobalDimEst(seurat[['pca']]@cell.embeddings, k = 10)
+    PC_num.gml <- round(PC_num.gml$dim.est,0)
+    seurat <- FindNeighbors(seurat, dims = 1:PC_num.gml)
+    seurat <- FindClusters(seurat, resolution = res, algorithm = 4)
+    name <- paste0('originalexp_snn_res.',res)
+    cluster <- seurat@meta.data[[name]]
+    clusters[[i]] <- cluster
+  }
+  return(clusters)
+}
+com_para_r <- compare_para(seurat, seed, c(0.7,0.7),c(2000, 4000))
+table(com_para_r[[1]],com_para_r[[2]])
+rm(com_para_r)
+
+# select the best feature number and best PC number
+feat_num_sele <- 4000
+features_hvg <- getTopHVGs(var.out,n=feat_num_sele)
+seurat <- RunPCA(seurat, features = features_hvg, seed.use = seed)  # here the features are chosen by deviance
+#DimHeatmap(seurat, reduction = "pca",dims = 1:3)
+PC_num.elbow <- findElbowPoint(seurat[['pca']]@stdev)
+PC_num.elbow
+PC_num.gml <- intrinsicDimension::maxLikGlobalDimEst(seurat[['pca']]@cell.embeddings, k = 10)
+PC_num.gml
+PC_num.gml <- round(PC_num.gml$dim.est,0)
+PC_num.gml
+ElbowPlot(seurat) +
+  geom_vline(xintercept = PC_num.elbow, color = 'blue', linetype="dashed") +
+  geom_vline(xintercept = PC_num.gml, color = 'coral', linetype="dashed") +
+  annotate('text',x=PC_num.elbow, y=10,label='elbow point',color = 'red') +
+  annotate('text',x=PC_num.gml, y=10,label='global maximum likelihood',color = 'red')
+ggsave('figures/PC_num_sele.jpg',device='jpg', width = 10, height = 6)
+seurat <- RunTSNE(seurat, seed.use = seed, perplexity = 20, dims = 1:PC_num.gml)
+DimPlot(seurat, reduction = "tsne" , group.by = 'Cell.Type')
+#ggsave('figures/leiden_tsne.jpg', device='jpg', width = 8, height = 7)
+seurat <- RunUMAP(seurat,seed.use = seed, dims = 1:PC_num.gml)
+DimPlot(seurat, reduction = "umap" , group.by = 'Cell.Type')
+
+#  convey those dim-reduction plots to a SCE object (to use some functions in bioconductor)
+sce_hvg <- as.SingleCellExperiment(seurat)
+plotReducedDim(sce_hvg, "TSNE", colour_by="Cell.Type")  # make sure it's the same as seurat's tSNE
+counts(sce_hvg) <- as.matrix(counts(sce_hvg))
+assays(sce_hvg)$norm_counts <- 2^(logcounts(sce_hvg))-1
+sce_hvg
+
+# select the best resolution and cluster cells using Leiden algorithm
+res_sele <- 0.7
+seurat <- FindNeighbors(seurat, dims = 1:PC_num.gml)
+seurat <- FindClusters(seurat, resolution = res_sele, algorithm = 4)  # algorithm 4 is "Leiden"; 1 is "Louvain"
+DimPlot(seurat, reduction = "tsne", label = TRUE, shape.by = 'Cell.Type')
+
+# pass the clustering result back to SCE object
+cluster.leiden <- seurat@meta.data[[paste0('originalexp_snn_res.',res_sele)]]
+colLabels(sce_hvg) <- cluster.leiden
+
+# compare to Deviance results
+plotReducedDim(sce_hvg, "TSNE", shape_by="Cell.Type", colour_by = 'label') 
+ggsave('figures/leiden_tsne_hvg.jpg', device='jpg', width = 8, height = 7)
+sce_hvg$dev_clust <- colLabels(sce_dev)
+plotReducedDim(sce_hvg, "TSNE", shape_by="Cell.Type", colour_by = 'dev_clust')
+ggsave('figures/leiden_tsne_hvg_dev.jpg', device='jpg', width = 8, height = 7)
+table(dev=sce_hvg$dev_clust, hvg=colLabels(sce_hvg))
+
+# plot marker genes of each cluster (heatmap)
+group_marker <- FindAllMarkers(seurat, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+group_marker %>% dplyr::filter(p_val_adj < 0.01) %>%
+  group_by(cluster) %>%
+  dplyr::slice_min(n = 10, order_by = p_val_adj) -> top10
+DoHeatmap(seurat,features=top10$gene, slot = "scale.data") #+ scale_fill_virdis()
+#FeaturePlot(seurat, reduction = 'TSNE', features=top10[top10['cluster']==1,]$gene[1:4])
+leiden_markers <- plotHeatmap(sce_hvg, exprs_values = "logcounts", 
+                              order_columns_by=c("label", "Cell.Type"), 
+                              features=top10$gene, cluster_rows = FALSE, center = TRUE,
+                              gaps_col = cumsum(as.numeric(table(colLabels(sce_hvg)))),
+                              gaps_row = seq(0,50,10), 
+                              color = colorRampPalette(rev(RColorBrewer::brewer.pal(10,"RdYlBu")))(40))
+ggsave('figures/leiden_markers_hvg.jpg', leiden_markers, device='jpg', width = 10, height = 8)
+#colorRampPalette(rev(RColorBrewer::brewer.pal(10,"RdYlBu")))(100)
+#colorRampPalette(rev(RColorBrewer::brewer.pal(11,"RdBu")))(100)
+#colorRampPalette(c(rev(RColorBrewer::brewer.pal(9,'Blues')), RColorBrewer::brewer.pal(9,'Reds')))(100)
+#colorRampPalette(c('#fc00fc','black','#fcfc00'))(100)
+
+# Find markers between selected two groups (here we use 2 clsuters in 'serum' group)
+#FindMarkers(seurat, ident.1 = 1, min.pct = 0.25, only.pos = TRUE)  # compare to the rest of cells
+group_diff <- FindMarkers(seurat, ident.1 = 2, ident.2 = 5, min.pct = 0.25)
+head(group_diff)
+group_diff <- group_diff[group_diff$p_val_adj < 0.01, ]
+nrow(group_diff)
+write.csv(group_diff,'figures/group_diff_serum_hvg.csv',row.names = TRUE)
+
+# show difference of expression on tSNE plot
+FeaturePlot(seurat, features=rownames(group_diff[1:20,]))
+ggsave('figures/group_diff_serum_1.jpg', device='jpg', width = 17, height = 15)
+
+# seperate into two groups based on positive/negative fold change
+up_reg <- group_diff[group_diff$avg_log2FC > 0,]
+down_reg <- group_diff[group_diff$avg_log2FC < 0,]
+
+# show difference of expression on heatmap
+#DoHeatmap(seurat,features=rownames(group_diff[1:50,]), slot = "scale.data")
+group_diff_serum_2 <- plotHeatmap(sce_hvg[,sce_hvg$Cell.Type=='serum'],
+                                  exprs_values = "logcounts", order_columns_by=c("label", "Cell.Type"),
+                                  features=rownames(rbind(up_reg[1:25,], down_reg[1:25,])),
+                                  cluster_rows = FALSE, center = TRUE, zlim = c(-9,9),
+                                  color = colorRampPalette(rev(RColorBrewer::brewer.pal(10,"RdYlBu")))(40),
+                                  gaps_col = cumsum(as.numeric(table(colLabels(sce_hvg)))[c(2,5)]),
+                                  gaps_row = c(25,50))
+ggsave('figures/group_diff_serum_hvg.jpg', group_diff_serum_2, device='jpg', width = 12, height = 10)
+
+# details of Silhouette width (and tSNE plots of clustering results)
+#sil <- cluster::silhouette(as.integer(cluster.ld), dist(reducedDim(sce_hvg, "PCA")))
+detail_sil <- function(res, seurat, PC_sele){
+  for(i in res){
+    print(paste0('res = ', i))
+    slot_name <- paste0('originalexp_snn_res.',i)
+    dir1 <- paste0('figures/leiden_hvg_res_',i,'_1.jpg')
+    dir2 <- paste0('figures/leiden_hvg_res_',i,'_2.jpg')
+    dir3 <- paste0('figures/leiden_hvg_res_',i,'_tsne.jpg')
+    seurat <- FindClusters(seurat, resolution = i, algorithm = 4)
+    cluster <- seurat@meta.data[[paste0('originalexp_snn_res.',i)]]
+    sil <- cluster::silhouette(as.integer(cluster), dist(seurat[['pca']]@cell.embeddings[,1:PC_sele]))
+    sil.data <- as.data.frame(sil)
+    sil.data$closest <- factor(ifelse(sil.data$sil_width > 0, cluster, sil.data$neighbor))
+    #sil.data$cluster <- cluster.ld
+    ggplot(sil.data, aes(x=cluster, y=sil_width, colour=closest)) +
+      ggbeeswarm::geom_quasirandom(method="smiley") + 
+      ylab('Silhouette width') +
+      geom_hline(aes(yintercept=0), color = 'red', linetype="dashed")
+    ggsave(dir1, device='jpg', width = 6, height = 5)
+    ggplot(as.data.frame(sil.data), aes(x=sil_width))+
+      geom_histogram(color='grey80',bins=50) +
+      geom_density(alpha=.2, fill="blue") + xlab('Silhouette Width')+
+      ggtitle(paste0('avarage Silhouette Width: ',round(mean(sil.data$sil_width),4))) +
+      geom_vline(aes(xintercept=0), color = 'red', linetype="dashed")
+    ggsave(dir2, device='jpg', width = 5, height = 4)
+    DimPlot(seurat, reduction = "tsne" ,label = TRUE, shape.by = 'Cell.Type')
+    ggsave(dir3, device='jpg', width = 8, height = 6)
+  }
+}
+detail_sil(res=c(0.3,0.7), seurat = seurat, PC_sele=PC_num.gml)
+
+# clean up variable
+rm(group_diff)
+rm(group_marker)
+rm(top10)
+rm(group_diff_serum_2)
+rm(leiden_markers)
+rm(up_reg)
+rm(down_reg)
+rm(sce_seurat)
+
+
+# normalisation by SCtransform #################################################
+# cluster by seurat package (using Leiden/Louvain algorithm)
+#features_hvg <- getTopHVGs(var.out,n=5000)
+features_dev <- names(dev[order(dev,decreasing=TRUE)])[1:5000]
+sce_seurat <- sce_origin
+sce_seurat <- sce_seurat[, !cell_filter$discard]
+sce_seurat <- sce_seurat[,assays(sce_seurat)$counts[grepl('^Pou5f1$',rownames(sce_seurat)),] != 0]
+sce_seurat <- sce_seurat[,assays(sce_seurat)$counts[grepl('^Sox2$',rownames(sce_seurat)),] != 0]
+sce_seurat <- sce_seurat[!is.spike,]
+sce_seurat <- sce_seurat[rowSums(assays(sce_seurat)$counts > 0) >= 3,]
+sce_seurat
+seurat <- as.Seurat(sce_seurat, data = "counts")
+seurat <- SCTransform(seurat, vst.flavor = "v2", assay = 'originalexp')
+#seurat2 <- PercentageFeatureSet(seurat2, pattern = "^mt.", col.name = "percent.mt")
+#SCTransform(seurat2, method = "glmGamPoi", vars.to.regress = "percent.mt", assay = 'originalexp')
+#seurat <- FindVariableFeatures(seurat, selection.method = "vst", nfeatures = 2000)
+#VariableFeatures(seurat)[1:100]
+#VlnPlot(object = seurat, features = c('Pou5f1','Nanog'))
+
+# test for resolution of leiden and features number (can also test other parameters!)
+sweep_para <- function(seurat, seed, features, res, feature_num){
+  para_res <- c()
+  sil_score <- c()
+  cluster_num <- c()
+  ft_num <- c()
+  PC_num <- c()
+  for(j in feature_num){
+    print(paste0('feature number = ', j))
+    seurat <- RunPCA(seurat, features = features[1:j], seed.use = seed)
+    PC_num.gml <- intrinsicDimension::maxLikGlobalDimEst(seurat[['pca']]@cell.embeddings, k = 10)
+    PC_num.gml
+    PC_sele <- round(PC_num.gml$dim.est,0)
+    seurat <- FindNeighbors(seurat, dims = 1:PC_sele)
+    for(i in res){
+      print(paste0('res = ', i))
+      para_res <- c(para_res,i)
+      seurat <- FindClusters(seurat, resolution = i, algorithm = 4)
+      cluster <- seurat@meta.data[[paste0('SCT_snn_res.',i)]]
+      sil <- cluster::silhouette(as.integer(cluster), dist(seurat[['pca']]@cell.embeddings[,1:PC_sele]))
+      sil.data <- as.data.frame(sil)
+      score <- mean(sil.data$sil_width)
+      sil_score <- c(sil_score,score)
+      cluster_num <- c(cluster_num, length(table(cluster)))
+      ft_num <- c(ft_num, j)
+      PC_num <- c(PC_num, PC_sele)
+    }
+    cat('\n')
+  }
+  r <- data.frame(res=para_res, sil_score=sil_score, clust_num=cluster_num,
+                  feature_num=ft_num, PC_num=PC_num)
+  return(r)
+}
+out <- sweep_para(seurat, seed, features_dev, 
+                  res=seq(0.1,2.0,0.1),
+                  feature_num = c(100, 250, 500, seq(1000,5000,500)))
+out
+ggplot(out, aes(x=res,y=sil_score,label=paste0('(',res,', ',round(sil_score,3),')'))) +
+  geom_line(aes(color = factor(feature_num))) +
+  ylab('Silhouette Score') +
+  xlab('Leiden Resolution') +
+  guides(color=guide_legend(title="Feature Number")) +
+  scale_color_brewer(palette="Paired")
+ggsave('figures/leiden_para_1_sct_dev.jpg',device='jpg', width = 8, height = 6)
+ggplot(out, aes(x = factor(feature_num), y = sil_score, 
+                label=paste0('(',res,', ',round(sil_score,3),')'))) +
+  geom_bar(stat = "summary", fun = "var")+
+  ylab('Variance of Silhouette') +
+  xlab('Feature Number')
+ggsave('figures/leiden_para_2_sct_dev.jpg',device='jpg', width = 8, height = 5)
+rm(out)
+
+# comparison of different cluster results (different resolutions)
+compare_para <- function(seurat, seed, resolution, feature_num){
+  clusters <- list()
+  for(i in c(1,2)){
+    res <- resolution[i]
+    ft_num <- feature_num[i]
+    seurat <- RunPCA(seurat, features = features_dev[1:ft_num], seed.use = seed)
+    PC_num.gml <- intrinsicDimension::maxLikGlobalDimEst(seurat[['pca']]@cell.embeddings, k = 10)
+    PC_num.gml <- round(PC_num.gml$dim.est,0)
+    seurat <- FindNeighbors(seurat, dims = 1:PC_num.gml)
+    seurat <- FindClusters(seurat, resolution = res, algorithm = 4)
+    name <- paste0('SCT_snn_res.',res)
+    cluster <- seurat@meta.data[[name]]
+    clusters[[i]] <- cluster
+  }
+  return(clusters)
+}
+com_para_r <- compare_para(seurat, seed, c(0.7,0.7),c(2000, 4000))
+table(com_para_r[[1]],com_para_r[[2]])
+rm(com_para_r)
+
+# select the best feature number and best PC number
+feat_num_sele <- 4000
+features_dev <- names(dev[order(dev,decreasing=TRUE)])[1:feat_num_sele]
+seurat <- RunPCA(seurat, features = features_dev, seed.use = seed)  # here the features are chosen by deviance
+#DimHeatmap(seurat, reduction = "pca",dims = 1:3)
+PC_num.elbow <- findElbowPoint(seurat[['pca']]@stdev)
+PC_num.elbow
+PC_num.gml <- intrinsicDimension::maxLikGlobalDimEst(seurat[['pca']]@cell.embeddings, k = 10)
+PC_num.gml
+PC_num.gml <- round(PC_num.gml$dim.est,0)
+PC_num.gml
+ElbowPlot(seurat) + 
+  geom_vline(xintercept = PC_num.elbow, color = 'blue', linetype="dashed") +
+  geom_vline(xintercept = PC_num.gml, color = 'coral', linetype="dashed") +
+  annotate('text',x=PC_num.elbow, y=10,label='elbow point',color = 'red') +
+  annotate('text',x=PC_num.gml, y=10,label='global maximum likelihood',color = 'red')
+#ggsave('figures/PC_num_sele.jpg',device='jpg', width = 10, height = 6)
+seurat <- RunTSNE(seurat, seed.use = seed, perplexity = 20, dims = 1:PC_num.gml)
+DimPlot(seurat, reduction = "tsne" , group.by = 'Cell.Type')
+#ggsave('figures/leiden_tsne.jpg', device='jpg', width = 8, height = 7)
+seurat <- RunUMAP(seurat,seed.use = seed, dims = 1:PC_num.gml)
+DimPlot(seurat, reduction = "umap" , group.by = 'Cell.Type')
+
+#  convey those dim-reduction plots to a SCE object (to use some functions in bioconductor)
+sce_dev_sct <- as.SingleCellExperiment(seurat)
+plotReducedDim(sce_dev_sct, "TSNE", colour_by="Cell.Type")  # make sure it's the same as seurat's tSNE
+counts(sce_dev_sct) <- as.matrix(counts(sce_dev_sct))
+assays(sce_dev_sct)$norm_counts <- 2^(logcounts(sce_dev_sct))-1
+sce_dev_sct
+
+# select the best resolution and cluster cells using Leiden algorithm
+res_sele <- 0.7
+seurat <- FindNeighbors(seurat, dims = 1:PC_num.gml)
+seurat <- FindClusters(seurat, resolution = res_sele, algorithm = 4)  # algorithm 4 is "Leiden"; 1 is "Louvain"
+DimPlot(seurat, reduction = "tsne", label = TRUE, shape.by = 'Cell.Type')
+
+# pass the clustering result back to SCE object
+cluster.leiden <- seurat@meta.data[[paste0('SCT_snn_res.',res_sele)]]
+colLabels(sce_dev_sct) <- cluster.leiden
+
+# compare to deconvolution results
+plotReducedDim(sce_dev_sct, "TSNE", shape_by="Cell.Type", colour_by = 'label') 
+ggsave('figures/leiden_tsne_sct.jpg', device='jpg', width = 8, height = 7)
+sce_dev_sct$dev_clust <- colLabels(sce_dev)
+plotReducedDim(sce_dev_sct, "TSNE", shape_by="Cell.Type", colour_by = 'dev_clust')
+ggsave('figures/leiden_tsne_sct_decon.jpg', device='jpg', width = 8, height = 7)
+table(decon=sce_dev_sct$dev_clust,sct=colLabels(sce_dev_sct))
+
+# plot marker genes of each cluster (heatmap)
+group_marker <- FindAllMarkers(seurat, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+group_marker %>% dplyr::filter(p_val_adj < 0.01) %>%
+  group_by(cluster) %>%
+  dplyr::slice_min(n = 10, order_by = p_val_adj) -> top10
+DoHeatmap(seurat,features=top10$gene, slot = "scale.data") #+ scale_fill_virdis()
+#FeaturePlot(seurat, reduction = 'TSNE', features=top10[top10['cluster']==1,]$gene[1:4])
+leiden_markers <- plotHeatmap(sce_dev_sct, exprs_values = "logcounts", 
+                              order_columns_by=c("label", "Cell.Type"), 
+                              features=top10$gene, cluster_rows = FALSE, center = TRUE,
+                              gaps_col = cumsum(as.numeric(table(colLabels(sce_dev_sct)))),
+                              gaps_row = seq(0,50,10), zlim= c(-6,6),
+                              color = colorRampPalette(rev(RColorBrewer::brewer.pal(10,"RdYlBu")))(30))
+ggsave('figures/leiden_markers_sct.jpg', leiden_markers, device='jpg', width = 10, height = 8)
+#colorRampPalette(rev(RColorBrewer::brewer.pal(10,"RdYlBu")))(100)
+#colorRampPalette(rev(RColorBrewer::brewer.pal(11,"RdBu")))(100)
+#colorRampPalette(c(rev(RColorBrewer::brewer.pal(9,'Blues')), RColorBrewer::brewer.pal(9,'Reds')))(100)
+#colorRampPalette(c('#fc00fc','black','#fcfc00'))(100)
+
+# Find markers between selected two groups (here we use 2 clsuters in 'serum' group)
+#FindMarkers(seurat, ident.1 = 1, min.pct = 0.25, only.pos = TRUE)  # compare to the rest of cells
+group_diff <- FindMarkers(seurat, ident.1 = 2, ident.2 = 5, min.pct = 0.25)
+head(group_diff)
+group_diff <- group_diff[group_diff$p_val_adj < 0.01, ]
+nrow(group_diff)
+write.csv(group_diff,'figures/group_diff_serum_sct.csv',row.names = TRUE)
+
+# show difference of expression on tSNE plot
+FeaturePlot(seurat, features=rownames(group_diff[1:20,]))
+ggsave('figures/group_diff_serum_1.jpg', device='jpg', width = 17, height = 15)
+
+# seperate into two groups based on positive/negative fold change
+up_reg <- group_diff[group_diff$avg_log2FC > 0,]
+down_reg <- group_diff[group_diff$avg_log2FC < 0,]
+
+# show difference of expression on heatmap
+#DoHeatmap(seurat,features=rownames(group_diff[1:50,]), slot = "scale.data")
+group_diff_serum_2 <- plotHeatmap(sce_dev_sct[,sce_dev_sct$Cell.Type=='serum'],
+                                  exprs_values = "logcounts", order_columns_by=c("label", "Cell.Type"),
+                                  features=rownames(rbind(up_reg[1:25,], down_reg[1:25,])),
+                                  cluster_rows = FALSE, center = TRUE, zlim = c(-7,7),
+                                  color = colorRampPalette(rev(RColorBrewer::brewer.pal(10,"RdYlBu")))(30),
+                                  gaps_col = cumsum(as.numeric(table(colLabels(sce_dev_sct)))[c(2,5)]),
+                                  gaps_row = c(25,50))
+ggsave('figures/group_diff_serum_sct.jpg', group_diff_serum_2, device='jpg', width = 12, height = 10)
+
+# details of Silhouette width (and tSNE plots of clustering results)
+#sil <- cluster::silhouette(as.integer(cluster.ld), dist(reducedDim(sce_dev_sct, "PCA")))
+detail_sil <- function(res, seurat, PC_sele){
+  for(i in res){
+    print(paste0('res = ', i))
+    slot_name <- paste0('originalexp_snn_res.',i)
+    dir1 <- paste0('figures/leiden_sct_res_',i,'_1.jpg')
+    dir2 <- paste0('figures/leiden_sct_res_',i,'_2.jpg')
+    dir3 <- paste0('figures/leiden_sct_res_',i,'_tsne.jpg')
+    seurat <- FindClusters(seurat, resolution = i, algorithm = 4)
+    cluster <- seurat@meta.data[[paste0('SCT_snn_res.',i)]]
+    sil <- cluster::silhouette(as.integer(cluster), dist(seurat[['pca']]@cell.embeddings[,1:PC_sele]))
+    sil.data <- as.data.frame(sil)
+    sil.data$closest <- factor(ifelse(sil.data$sil_width > 0, cluster, sil.data$neighbor))
+    #sil.data$cluster <- cluster.ld
+    ggplot(sil.data, aes(x=cluster, y=sil_width, colour=closest)) +
+      ggbeeswarm::geom_quasirandom(method="smiley") + 
+      ylab('Silhouette width') +
+      geom_hline(aes(yintercept=0), color = 'red', linetype="dashed")
+    ggsave(dir1, device='jpg', width = 6, height = 5)
+    ggplot(as.data.frame(sil.data), aes(x=sil_width))+
+      geom_histogram(color='grey80',bins=50) +
+      geom_density(alpha=.2, fill="blue") + xlab('Silhouette Width')+
+      ggtitle(paste0('avarage Silhouette Width: ',round(mean(sil.data$sil_width),4))) +
+      geom_vline(aes(xintercept=0), color = 'red', linetype="dashed")
+    ggsave(dir2, device='jpg', width = 5, height = 4)
+    DimPlot(seurat, reduction = "tsne" ,label = TRUE, shape.by = 'Cell.Type')
+    ggsave(dir3, device='jpg', width = 8, height = 6)
+  }
+}
+detail_sil(res=c(0.3,0.7), seurat = seurat, PC_sele=PC_num.gml)
+
+# clean up variable
+rm(group_diff)
+rm(group_marker)
+rm(top10)
+rm(group_diff_serum_2)
+rm(leiden_markers)
+rm(up_reg)
+rm(down_reg)
+rm(sce_seurat)
+
+
+
+# Spearman Correlation #########################################################
