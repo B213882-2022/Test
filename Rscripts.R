@@ -1587,4 +1587,196 @@ rm(sce_seurat)
 
 
 
-# Spearman Correlation #########################################################
+# Spearman Correlation of all Oct4 potential targets############################
+# load potential Oct4 targets
+oct4_tar.potent <- read.csv('oct4_targets.csv', na.strings = c("", "NA"))
+oct4_tar.potent <- na.omit(oct4_tar.potent[,1:2])
+oct4_tar.potent <- oct4_tar.potent$Gene.name
+table(oct4_tar.potent %in% rownames(sce_dev))  
+oct4_tar.potent[!oct4_tar.potent %in% rownames(sce_dev)]  # check which genes are not available
+oct4_tar.potent <- c('Pou5f1',oct4_tar.potent[oct4_tar.potent %in% rownames(sce_dev)])
+tar_length <- length(oct4_tar.potent)
+tar_length
+
+# calculate Spearman correlation
+oct4_tar.corr <- correlatePairs(sce_dev, subset.row=oct4_tar.potent)
+oct4_tar.corr
+
+# build correlation matrix
+build_corr <- function(corr){
+  df <- as.data.frame(corr[c('gene1','gene2','rho')])
+  df2 <- data.frame(gene1=df$gene2, gene2=df$gene1, rho=df$rho)
+  df <- rbind(df,df2)
+  corr.matrix <- spread(df, key = gene2, value = rho)
+  rownames(corr.matrix) <- corr.matrix$gene1
+  corr.matrix$gene1 <- NULL  # remove 1st column
+  diag(corr.matrix) <- 1
+  return(corr.matrix)
+}
+oct4_tar_corr.matrix <- build_corr(oct4_tar.corr)
+
+# df <- as.data.frame(oct4_tar.corr[c('gene1','gene2','rho')])
+# df2 <- data.frame(gene1=df$gene2, gene2=df$gene1, rho=df$rho)
+# df <- rbind(df,df2)
+# oct4_tar_corr.matrix <- spread(df, key = gene2, value = rho)
+# rownames(oct4_tar_corr.matrix) <- oct4_tar_corr.matrix$gene1
+# oct4_tar_corr.matrix$gene1 <- NULL  # remove 1st column
+# diag(oct4_tar_corr.matrix) <- 1
+
+# plot correlation
+oct4_potent_tar <- pheatmap(oct4_tar_corr.matrix,fontsize_row=3,fontsize_col=3, 
+                         main = 'Spearman correlation of potential Oct4 targets',
+                         breaks = seq(-1,1,0.05), 
+                         color = colorRampPalette(rev(RColorBrewer::brewer.pal(11,"RdBu")))(40))
+# change Oct4 text color to red
+names = oct4_potent_tar$gtable$grobs[[6]]$label
+color = rep('black', tar_length)
+color[grep('Pou5f1',names)] <- 'red'
+oct4_potent_tar$gtable$grobs[[5]]$gp=grid::gpar(col=color, fontsize=rep(3,tar_length))
+oct4_potent_tar$gtable$grobs[[6]]$gp=grid::gpar(col=color, fontsize=rep(3,tar_length))
+oct4_potent_tar
+ggsave('figures/oct4_potent_tar.jpg',oct4_potent_tar, device='jpg', width = 15, height = 15, dpi=400)
+rm(names)
+rm(color)
+
+
+# permutation test -> most correlated genes of Oct4 ############################
+# serum cluster
+sce_serum <- sce_dev[,sce_dev$Cell.Type == 'serum']
+table(sce_serum$label)
+
+
+# cluster3 corr ################################################################
+sce_serum_3 <- sce_serum[, sce_serum$label == 3]
+sce_serum_3
+
+# filter genes that are expressed only in less than 10% cells
+cell_num <- round(ncol(sce_serum_3)/10,0)
+cell_num
+filtered_genes <- rownames(sce_serum_3)[nexprs(sce_serum_3, byrow=TRUE)>10]
+length(filtered_genes)
+
+# calculate corr of Oct4 and all genes
+get_corr <- function(name1,name2,sce){
+  if(name1==name2){
+    same <- t(as.matrix(c(1,0,0)))
+    colnames(same) <- c('rho','p.value','FDR')
+    rownames(same) <- name1
+    return(same)
+  }
+  else{
+    r <- as.matrix(correlatePairs(sce,subset.row=c(name1,name2))[c('rho','p.value','FDR')])
+    rownames(r) <- name1
+    return(r)
+  }
+}
+serum_clust3_corr <- lapply(filtered_genes, FUN = get_corr, name2='Pou5f1', sce=sce_serum_3)
+serum_clust3_corr <- do.call(rbind, serum_clust3_corr)
+serum_clust3_corr <- as.data.frame(serum_clust3_corr)
+head(serum_clust3_corr)
+sum(is.na(serum_clust3_corr))
+
+# filter genes with FDR > 0.01
+sum(serum_clust3_corr$FDR < 0.01)
+serum_clust3_corr <- serum_clust3_corr[rownames(serum_clust3_corr)!='Pou5f1',]
+dim(serum_clust3_corr)
+serum_clust3_corr <- serum_clust3_corr[serum_clust3_corr$FDR < 0.01,]
+dim(serum_clust3_corr)
+
+# select positive Rho genes
+serum_clust3_posi <- serum_clust3_corr[serum_clust3_corr$rho >0,]
+serum_clust3_posi <- serum_clust3_posi[order(serum_clust3_posi$FDR, decreasing = FALSE),]
+head(serum_clust3_posi)
+dim(serum_clust3_posi)
+
+# select negative Rho genes
+serum_clust3_nega <- serum_clust3_corr[serum_clust3_corr$rho <0,]
+serum_clust3_nega <- serum_clust3_nega[order(serum_clust3_nega$FDR, decreasing = FALSE),]
+head(serum_clust3_nega)
+dim(serum_clust3_nega)
+
+# sum up and plot gene logcounts
+clust3_top50_corr_genes <- c(rownames(serum_clust3_posi[1:25,]),
+                             "Pou5f1", 'Nanog', 'Sox2','Klf4','Zfp42','Utf1','Esrrb',
+                             rownames(serum_clust3_nega[1:25,]))
+head(clust3_top50_corr_genes)
+serum_clust3_top50_corr <- plotHeatmap(sce_serum_3, exprs_values = 'logcounts', 
+                                       features = clust3_top50_corr_genes,
+                                       columns = names(sort(assays(sce_serum_3)$logcounts['Pou5f1',])),
+                                       cluster_rows = FALSE, cluster_cols=FALSE, 
+                                       center = TRUE, zlim = c(-5,5),
+                                       color = colorRampPalette(rev(RColorBrewer::brewer.pal(10,"RdYlBu")))(40),
+                                       main = 'top 25 positive/negative genes in cluster3 (serum)',
+                                       gaps_row = c(25,32))
+ggsave('figures/serum_clust3.jpg',serum_clust3_top50_corr, device='jpg', width = 12, height = 10)
+rm(selected_genes)
+rm(cell_num)
+
+
+# cluster5 corr ################################################################
+sce_serum_5 <- sce_serum[, sce_serum$label == 5]
+sce_serum_5
+
+# filter genes that are expressed only in less than 10% cells
+cell_num <- round(ncol(sce_serum_5)/10,0)
+cell_num
+filtered_genes <- rownames(sce_serum_5)[nexprs(sce_serum_5, byrow=TRUE)>10]
+length(filtered_genes)
+
+# calculate corr of Oct4 and all genes
+get_corr <- function(name1,name2,sce){
+  if(name1==name2){
+    same <- t(as.matrix(c(1,0,0)))
+    colnames(same) <- c('rho','p.value','FDR')
+    rownames(same) <- name1
+    return(same)
+  }
+  else{
+    r <- as.matrix(correlatePairs(sce,subset.row=c(name1,name2))[c('rho','p.value','FDR')])
+    rownames(r) <- name1
+    return(r)
+  }
+}
+serum_clust5_corr <- lapply(filtered_genes, FUN = get_corr, name2='Pou5f1', sce=sce_serum_5)
+serum_clust5_corr <- do.call(rbind, serum_clust5_corr)
+serum_clust5_corr <- as.data.frame(serum_clust5_corr)
+head(serum_clust5_corr)
+sum(is.na(serum_clust5_corr))
+
+# filter genes with FDR > 0.01
+sum(serum_clust5_corr$FDR < 0.01)
+serum_clust5_corr <- serum_clust5_corr[rownames(serum_clust5_corr)!='Pou5f1',]
+dim(serum_clust5_corr)
+serum_clust5_corr <- serum_clust5_corr[serum_clust5_corr$FDR < 0.01,]
+dim(serum_clust5_corr)
+
+# select positive Rho genes
+serum_clust5_posi <- serum_clust5_corr[serum_clust5_corr$rho >0,]
+serum_clust5_posi <- serum_clust5_posi[order(serum_clust5_posi$FDR, decreasing = FALSE),]
+head(serum_clust5_posi)
+dim(serum_clust5_posi)
+
+# select negative Rho genes
+serum_clust5_nega <- serum_clust5_corr[serum_clust5_corr$rho <0,]
+serum_clust5_nega <- serum_clust5_nega[order(serum_clust5_nega$FDR, decreasing = FALSE),]
+head(serum_clust5_nega)
+dim(serum_clust5_nega)
+
+# sum up and plot gene logcounts
+clust5_top50_corr_genes <- c(rownames(serum_clust5_posi[1:25,]),
+                             "Pou5f1",'Nanog', 'Sox2','Klf4','Zfp42','Utf1','Esrrb',
+                             rownames(serum_clust5_nega[1:25,]))
+head(clust3_top50_corr_genes)
+serum_clust5_top50_corr <- plotHeatmap(sce_serum_5, exprs_values = 'logcounts', 
+                                       features = clust5_top50_corr_genes,
+                                       columns = names(sort(assays(sce_serum_5)$logcounts['Pou5f1',])),
+                                       cluster_rows = FALSE, cluster_cols=FALSE, 
+                                       center = TRUE, zlim = c(-5,5),
+                                       color = colorRampPalette(rev(RColorBrewer::brewer.pal(10,"RdYlBu")))(40),
+                                       main = 'top 25 positive/negative genes in cluster5 (serum)',
+                                       gaps_row = c(25,32),)
+ggsave('figures/serum_clust3.jpg',serum_clust5_top50_corr, device='jpg', width = 12, height = 10)
+rm(selected_genes)
+rm(cell_num)
+
+
