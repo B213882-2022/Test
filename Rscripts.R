@@ -390,12 +390,12 @@ rm(keep.prop)
 # Venn Diagram summary of failures in cell QC
 venn <- as.data.frame(cell_filter)
 QC_venn <- ggVennDiagram(apply(venn[1:4], 2, function(x) which(x == TRUE)),
-                              label_alpha=0, 
-                              set_color = c("deepskyblue2","darkolivegreen","darkorange","darkorchid"), 
-                              category.names = c(paste("Low Library Size (",sum(venn[1]),")",sep = ''),
-                                                 paste("Low Detected Genes (",sum(venn[2]),")",sep = ''),
-                                                 paste("High Mito Percent (",sum(venn[3]),")",sep = ''),
-                                                 paste("High ERCC percent (",sum(venn[4]),")",sep = ''))) + 
+                         label_alpha=0, 
+                         set_color = c("deepskyblue2","darkolivegreen","darkorange","darkorchid"), 
+                         category.names = c(paste("Low Library Size (",sum(venn[1]),")",sep = ''),
+                                            paste("Low Detected Genes (",sum(venn[2]),")",sep = ''),
+                                            paste("High Mito Percent (",sum(venn[3]),")",sep = ''),
+                                            paste("High ERCC percent (",sum(venn[4]),")",sep = ''))) + 
   scale_fill_gradient(low="white",high = "coral1") +
   ggtitle('Summary of failures in cell QC') + 
   theme(plot.title = element_text(hjust = 0.5)) +
@@ -1600,7 +1600,8 @@ tar_length <- length(oct4_tar.potent)
 tar_length
 
 # calculate Spearman correlation
-oct4_tar.corr <- correlatePairs(sce_dev, subset.row=oct4_tar.potent)
+oct4_tar.corr <- correlatePairs(sce_dev[,sce_dev$Cell.Type == 'serum'], subset.row=oct4_tar.potent)
+oct4_tar.corr <- oct4_tar.corr[apply(is.na(oct4_tar.corr),1,sum)==0,]
 oct4_tar.corr
 
 # build correlation matrix
@@ -1626,19 +1627,22 @@ oct4_tar_corr.matrix <- build_corr(oct4_tar.corr)
 
 # plot correlation
 oct4_potent_tar <- pheatmap(oct4_tar_corr.matrix,fontsize_row=3,fontsize_col=3, 
-                         main = 'Spearman correlation of potential Oct4 targets',
+                         main = 'Spearman correlation of potential Oct4 targets in serum',
                          breaks = seq(-1,1,0.05), 
                          color = colorRampPalette(rev(RColorBrewer::brewer.pal(11,"RdBu")))(40))
 # change Oct4 text color to red
 names = oct4_potent_tar$gtable$grobs[[6]]$label
-color = rep('black', tar_length)
+color = rep('black', length(oct4_tar.potent))
 color[grep('Pou5f1',names)] <- 'red'
-oct4_potent_tar$gtable$grobs[[5]]$gp=grid::gpar(col=color, fontsize=rep(3,tar_length))
-oct4_potent_tar$gtable$grobs[[6]]$gp=grid::gpar(col=color, fontsize=rep(3,tar_length))
+color[grep('Sox2',names)] <- 'red'
+color[grep('Nanog',names)] <- 'red'
+oct4_potent_tar$gtable$grobs[[5]]$gp=grid::gpar(col=color, fontsize=rep(3,length(oct4_tar.potent)))
+oct4_potent_tar$gtable$grobs[[6]]$gp=grid::gpar(col=color, fontsize=rep(3,length(oct4_tar.potent)))
 oct4_potent_tar
 ggsave('figures/oct4_potent_tar.jpg',oct4_potent_tar, device='jpg', width = 15, height = 15, dpi=400)
 rm(names)
 rm(color)
+rm(tar_length)
 
 
 # permutation test -> most correlated genes of Oct4 ############################
@@ -1730,6 +1734,9 @@ spearman_corr <- function(sce_obj, clust_num, gene_name, ctrl_genes, clust_name,
   names = top_corr_plot$gtable$grobs[[3]]$label
   color = rep('black', length(top_corr_genes))
   color[grep(paste0('^',gene_name,'$'),names)] <- 'red'
+  for(n in c(top_ctrl_genes,posi_ctrl,nega_ctrl)){
+    color[grep(paste0('^',n,'$'),names)] <- 'blue'
+  }
   top_corr_plot$gtable$grobs[[3]]$gp <- grid::gpar(col=color, fontsize=fontsize)
   
   return(list(corr_df=corr, heatmap=top_corr_plot))
@@ -1757,8 +1764,10 @@ fdr_lt_0.01_num <- function(sce_obj,clust_num,gene_name){
   corr <- as.data.frame(corr)
   corr <- corr[rownames(corr)!=gene_name,]
   corr <- corr[corr$FDR < 0.01,]
-  count <- t(as.matrix(c(gene_name,nrow(corr))))
-  colnames(count) <- c('gene_name','counts')
+  posi_corr <- corr[corr$rho >0,]
+  nega_corr <- corr[corr$rho <0,]
+  count <- t(as.matrix(c(gene_name,nrow(corr), nrow(posi_corr), nrow(nega_corr))))
+  colnames(count) <- c('gene_name','counts','posi', 'nega')
   rownames(count) <- gene_name
   return(count)
 }
@@ -1766,13 +1775,14 @@ fdr_lt_0.01_num <- function(sce_obj,clust_num,gene_name){
 positive_control_genes <- c("Pou5f1",'Sox2','Nanog','Zfp42','Klf4','Klf2','Klf5',
                             'Esrrb','Eras','Nacc1','Utf1','Lefty1', 'Sall4',
                             'Smad3','Smad1','Gdf3', 'Lin28a','Tfcp2l1','Id3',
-                            'Fgf4','Tcl1','Spp1','Upp1','Fbxo15','Dppa3',
+                            'Fgf4','Tcl1','Spp1','Upp1','Fbxo15','Dppa3','Trp53',
                             'Dppa5a','Nr0b1','Stat3','Cdyl', 'Mycbp', 'Tbx3', 
                             'Zfx', "Prdm14",'Foxd3', 'Gbx2','Zfp143','Otx2',
                             'Cdx2', "Gata3", "Eomes", 'Tcf15',"Tcf3",'Dnmt3a','Dnmt3b')
 
 # check how many targets (FDR < 0.01) each gene has in serum
-print(system.time(fdr_count <- mclapply(positive_control_genes, FUN = fdr_lt_0.01_num, 
+print(system.time(fdr_count <- mclapply(unique(c(positive_control_genes,oct4_tar.potent)), 
+                                        FUN = fdr_lt_0.01_num, 
                                         sce_obj=sce_dev, clust_num=c(3,5), mc.cores=2)))
 fdr_count <- do.call(rbind,fdr_count)
 fdr_count <- as.data.frame(fdr_count)
@@ -1804,7 +1814,7 @@ ggsave('figures/serum_clust5.jpg',serum_clust5_spear_corr$heatmap, device='jpg',
 
 # serum corr ###################################################################
 serum_spear_corr$out <- capture.output(serum_spear_corr <- 
-                                         spearman_corr(sce_dev, c(3,5),'Trh',
+                                         spearman_corr(sce_dev, c(3,5),'Pou5f1',
                                                        positive_control_genes , 
                                                        'serum',30))
 serum_spear_corr$out
@@ -1948,7 +1958,7 @@ ggsave('figures/targets_leiden_tsne.jpg', device='jpg', width = 8, height = 7)
 sce_targets$dev_clust <- colLabels(sce_dev)
 plotReducedDim(sce_targets, "TSNE", shape_by="Cell.Type", colour_by = 'dev_clust')
 ggsave('figures/targets_leiden_tsne_dev.jpg', device='jpg', width = 8, height = 7)
-table(tar=colLabels(sce_dev_tar), dev=colLabels(sce_dev))
+table(tar=colLabels(sce_targets), dev=colLabels(sce_dev))
 rm(out)
 rm(res_sele)
 rm(group_marker)
@@ -1960,15 +1970,207 @@ rm(PC_num.gml)
 all_spear_corr$out <- capture.output(all_spear_corr <- 
                                       spearman_corr(sce_dev, c(1:5),'Pou5f1',
                                                     positive_control_genes , 
-                                                    'all clusters',30))
+                                                    'all cells',30))
 all_spear_corr$out
 head(all_spear_corr$corr_df)
 dim(all_spear_corr$corr_df)
 ggsave('figures/all.jpg',all_spear_corr$heatmap, device='jpg', width = 12, height = 12)
 
 
+# venn diagram summary ########################################################
+ggVennDiagram(list(cluster3_serum = rownames(serum_clust3_spear_corr$corr_df), 
+                   cluster5_serum = rownames(serum_clust5_spear_corr$corr_df), 
+                   a2i = rownames(a2i_spear_corr$corr_df),
+                   cluster1_2i = rownames(clust1_2i_spear_corr$corr_df), 
+                   cluster4_2i = rownames(clust4_2i_spear_corr$corr_df)),
+                               label = "count", label_size = 5) +
+  theme(legend.position = "none", plot.margin=margin(1,1,1,1,'cm')) +
+  ggtitle('intersections of correlated genes in each clusters (Oct4)') +
+  theme(plot.title = element_text(hjust = 0.5))
+ggsave("figures/oct4_venn_1.pdf",device='pdf', width = 12, height = 12)
+
+ggVennDiagram(list(cluster3_serum = rownames(serum_clust3_spear_corr$corr_df), 
+                   cluster5_serum = rownames(serum_clust5_spear_corr$corr_df), 
+                   a2i = rownames(a2i_spear_corr$corr_df),
+                   cluster1_2i = rownames(clust1_2i_spear_corr$corr_df), 
+                   cluster4_2i = rownames(clust4_2i_spear_corr$corr_df),
+                   candidates = oct4_tar.potent[oct4_tar.potent != 'Pou5f1']),
+              label = "count", label_size = 5) +
+  theme(legend.position = "none", plot.margin=margin(1,1,1,1,'cm')) +
+  ggtitle('intersections of correlated genes in each clusters (Oct4)') +
+  theme(plot.title = element_text(hjust = 0.5))
+ggsave("figures/oct4_venn_2.pdf",device='pdf', width = 12, height = 12)
+
+ggVennDiagram(list(serum = rownames(serum_spear_corr$corr_df), 
+                   a2i = rownames(a2i_spear_corr$corr_df),
+                   cluster1_2i = rownames(clust1_2i_spear_corr$corr_df), 
+                   cluster4_2i = rownames(clust4_2i_spear_corr$corr_df),
+                   candidates = oct4_tar.potent[oct4_tar.potent != 'Pou5f1']),
+              label = "count", label_size = 5) +
+  theme(legend.position = "none", plot.margin=margin(1,1,1,1,'cm')) +
+  ggtitle('intersections of correlated genes in each clusters (Oct4)') +
+  theme(plot.title = element_text(hjust = 0.5))
+ggsave("figures/oct4_venn_3.pdf",device='pdf', width = 12, height = 12)
+
+# check intersection
+find_inter <- function(li){
+  r <- list()
+  for(i in 2:length(li)){
+    arr <- combn(1:length(li),i)
+    names <- c()
+    for(j in 1:ncol(arr)){
+      n <- Reduce(intersect, li[arr[,j]])
+      names <- c(names, n)
+    }
+    r[[i]] <- unique(names)
+  }
+  return(r)
+}
+find_inter(list(rownames(serum_spear_corr$corr_df),
+                rownames(a2i_spear_corr$corr_df),
+                rownames(clust1_2i_spear_corr$corr_df),
+                rownames(clust4_2i_spear_corr$corr_df)))
+
+find_inter(list(rownames(serum_spear_corr$corr_df),
+                candidates = oct4_tar.potent[oct4_tar.potent != 'Pou5f1']))
+find_inter(list(rownames(serum_clust3_spear_corr$corr_df),
+                candidates = oct4_tar.potent[oct4_tar.potent != 'Pou5f1']))
+find_inter(list(rownames(serum_clust5_spear_corr$corr_df),
+                candidates = oct4_tar.potent[oct4_tar.potent != 'Pou5f1']))
+find_inter(list(rownames(a2i_spear_corr$corr_df),
+                candidates = oct4_tar.potent[oct4_tar.potent != 'Pou5f1']))
+find_inter(list(rownames(clust1_2i_spear_corr$corr_df),
+                candidates = oct4_tar.potent[oct4_tar.potent != 'Pou5f1']))
+find_inter(list(rownames(clust4_2i_spear_corr$corr_df),
+                candidates = oct4_tar.potent[oct4_tar.potent != 'Pou5f1']))
+
+
 # serum Nanog corr #############################################################
-serum_nanog_spear_corr <- spearman_corr(sce_dev, c(3,5), 'Nanog', positive_control_genes , 'serum',30)
+# check Nanog variation
+nanog_var <- plotExpression(sce_dev,features = c('Nanog','Pou5f1','Sox2',
+                                                 'Klf4','Esrrb','Tcl1'), 
+                            x='Cell.Type')
+ggsave('figures/nanog_variation.jpg',nanog_var, device = 'jpg', width = 10, height = 10)
+
+# plot corr heatmap
+serum_nanog_spear_corr$out <- capture.output(serum_nanog_spear_corr <- 
+                                       spearman_corr(sce_dev, c(3,5),'Nanog',
+                                                     positive_control_genes , 
+                                                     'serum (Nanog)',30))
+serum_nanog_spear_corr$out
 head(serum_nanog_spear_corr$corr_df)
 dim(serum_nanog_spear_corr$corr_df)
 ggsave('figures/serum_nanog.jpg',serum_nanog_spear_corr$heatmap, device='jpg', width = 12, height = 12)
+
+# Serum clust3 Nanog corr #############################################################
+serum_clust3_nanog_spear_corr$out <- capture.output(serum_clust3_nanog_spear_corr <- 
+                                             spearman_corr(sce_dev, c(3),'Nanog',
+                                                           positive_control_genes , 
+                                                           'cluster 3 (Nanog)',30))
+serum_clust3_nanog_spear_corr$out
+head(serum_clust3_nanog_spear_corr$corr_df)
+dim(serum_clust3_nanog_spear_corr$corr_df)
+ggsave('figures/serum_clust3_nanog.jpg',serum_clust3_nanog_spear_corr$heatmap, device='jpg', width = 12, height = 12)
+
+# Serum clust5 Nanog corr #############################################################
+serum_clust5_nanog_spear_corr$out <- capture.output(serum_clust5_nanog_spear_corr <- 
+                                                      spearman_corr(sce_dev, c(5),'Nanog',
+                                                                    positive_control_genes , 
+                                                                    'cluster 5 (Nanog)',30))
+serum_clust5_nanog_spear_corr$out
+head(serum_clust5_nanog_spear_corr$corr_df)
+dim(serum_clust5_nanog_spear_corr$corr_df)
+ggsave('figures/serum_clust5_nanog.jpg',serum_clust5_nanog_spear_corr$heatmap, device='jpg', width = 12, height = 12)
+
+# a2i Nanog corr #############################################################
+a2i_nanog_spear_corr$out <- capture.output(a2i_nanog_spear_corr <- 
+                                       spearman_corr(sce_dev, c(2),'Nanog',
+                                                     positive_control_genes , 
+                                                     'a2i (Nanog)',30))
+a2i_nanog_spear_corr$out
+head(a2i_nanog_spear_corr$corr_df)
+dim(a2i_nanog_spear_corr$corr_df)
+ggsave('figures/a2i_nanog.jpg',a2i_nanog_spear_corr$heatmap, device='jpg', width = 12, height = 12)
+
+# 2i_clust1 Nanog corr #############################################################
+clust1_2i_nanog_spear_corr$out <- capture.output(clust1_2i_nanog_spear_corr <- 
+                                             spearman_corr(sce_dev, c(1),'Nanog',
+                                                           positive_control_genes , 
+                                                           'cluster 1 (Nanog)',30))
+clust1_2i_nanog_spear_corr$out
+head(clust1_2i_nanog_spear_corr$corr_df)
+dim(clust1_2i_nanog_spear_corr$corr_df)
+ggsave('figures/2i_clust1_nanog.jpg',clust1_2i_nanog_spear_corr$heatmap, device='jpg', width = 12, height = 12)
+
+# 2i_clust4 Nanog corr #############################################################
+clust4_2i_nanog_spear_corr$out <- capture.output(clust4_2i_nanog_spear_corr <- 
+                                                   spearman_corr(sce_dev, c(4),'Nanog',
+                                                                 positive_control_genes , 
+                                                                 'cluster 4 (Nanog)',30))
+clust4_2i_nanog_spear_corr$out
+head(clust4_2i_nanog_spear_corr$corr_df)
+dim(clust4_2i_nanog_spear_corr$corr_df)
+ggsave('figures/2i_clust4_nanog.jpg',clust4_2i_nanog_spear_corr$heatmap, device='jpg', width = 12, height = 12)
+
+# 2i_Nanog corr #############################################################
+i2_nanog_spear_corr$out <- capture.output(i2_nanog_spear_corr <- 
+                                                   spearman_corr(sce_dev, c(1,4),'Nanog',
+                                                                 positive_control_genes , 
+                                                                 '2i (Nanog)',30))
+i2_nanog_spear_corr$out
+head(i2_nanog_spear_corr$corr_df)
+dim(i2_nanog_spear_corr$corr_df)
+ggsave('figures/2i_nanog.jpg',i2_nanog_spear_corr$heatmap, device='jpg', width = 12, height = 12)
+
+# venn diagram summary ########################################################
+ggVennDiagram(list(cluster3_serum = rownames(serum_clust3_nanog_spear_corr$corr_df), 
+                   cluster5_serum = rownames(serum_clust5_nanog_spear_corr$corr_df),
+                   cluster1_2i = rownames(clust1_2i_nanog_spear_corr$corr_df), 
+                   cluster4_2i = rownames(clust4_2i_nanog_spear_corr$corr_df)),
+              label = "count", label_size = 5) +
+  theme(legend.position = "none", plot.margin=margin(1,1,1,1,'cm')) +
+  ggtitle('intersections of correlated genes in each clusters (Nanog)') +
+  theme(plot.title = element_text(hjust = 0.5))
+ggsave("figures/nanog_venn_1.pdf",device='pdf', width = 12, height = 12)
+
+ggVennDiagram(list(cluster3_serum = rownames(serum_clust3_nanog_spear_corr$corr_df), 
+                   cluster5_serum = rownames(serum_clust5_nanog_spear_corr$corr_df),
+                   a2i = rownames(a2i_nanog_spear_corr$corr_df),
+                   cluster1_2i = rownames(clust1_2i_nanog_spear_corr$corr_df), 
+                   cluster4_2i = rownames(clust4_2i_nanog_spear_corr$corr_df),
+                   candidates = oct4_tar.potent[oct4_tar.potent != 'Pou5f1']),
+              label = "count", label_size = 5) +
+  theme(legend.position = "none", plot.margin=margin(1,1,1,1,'cm')) +
+  ggtitle('intersections of correlated genes in each clusters (Nanog)') +
+  theme(plot.title = element_text(hjust = 0.5))
+ggsave("figures/nanog_venn_2.pdf",device='pdf', width = 12, height = 12)
+
+ggVennDiagram(list(serum = rownames(serum_nanog_spear_corr$corr_df), 
+                   a2i = rownames(a2i_nanog_spear_corr$corr_df),
+                   cluster1_2i = rownames(clust1_2i_nanog_spear_corr$corr_df), 
+                   cluster4_2i = rownames(clust4_2i_nanog_spear_corr$corr_df),
+                   candidates = oct4_tar.potent[oct4_tar.potent != 'Pou5f1']),
+              label = "count", label_size = 5) +
+  theme(legend.position = "none", plot.margin=margin(1,1,1,1,'cm')) +
+  ggtitle('intersections of correlated genes in each clusters (Nanog)') +
+  theme(plot.title = element_text(hjust = 0.5))
+ggsave("figures/nanog_venn_3.pdf",device='pdf', width = 12, height = 12)
+
+# check intersection
+find_inter(list(serum = rownames(serum_nanog_spear_corr$corr_df), 
+                a2i = rownames(a2i_nanog_spear_corr$corr_df), 
+                cluster1_2i = rownames(clust1_2i_nanog_spear_corr$corr_df), 
+                cluster4_2i = rownames(clust4_2i_nanog_spear_corr$corr_df)))
+
+find_inter(list(rownames(serum_nanog_spear_corr$corr_df),
+                candidates = oct4_tar.potent[oct4_tar.potent != 'Pou5f1']))
+find_inter(list(rownames(serum_clust3_nanog_spear_corr$corr_df),
+                candidates = oct4_tar.potent[oct4_tar.potent != 'Pou5f1']))
+find_inter(list(rownames(serum_clust5_nanog_spear_corr$corr_df),
+                candidates = oct4_tar.potent[oct4_tar.potent != 'Pou5f1']))
+find_inter(list(rownames(a2i_nanog_spear_corr$corr_df),
+                candidates = oct4_tar.potent[oct4_tar.potent != 'Pou5f1']))
+find_inter(list(rownames(clust1_2i_nanog_spear_corr$corr_df),
+                candidates = oct4_tar.potent[oct4_tar.potent != 'Pou5f1']))
+find_inter(list(rownames(clust4_2i_nanog_spear_corr$corr_df),
+                candidates = oct4_tar.potent[oct4_tar.potent != 'Pou5f1']))
