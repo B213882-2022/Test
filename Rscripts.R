@@ -77,7 +77,7 @@ rowData(sce)$ENSEMBL <- rownames(sce)
 
 # ERCC name annotation
 is.spike <- grepl("^ERCC", rowData(sce)$ENSEMBL)
-count(is.spike)
+sum(is.spike)
 idx <-  which(is.spike)
 rowData(sce)$GENENAME[idx] <- rowData(sce)$ENSEMBL[idx]
 rowData(sce)$GENENAME[idx]
@@ -121,7 +121,7 @@ head(MT_genes)
 MT_id <- paste(MT_genes$Gene.stable.ID, collapse='|')
 head(MT_id)
 is.mito <- grepl(MT_id, rowData(sce)$ENSEMBL)
-count(is.mito)
+sum(is.mito)
 rm(MT_id)
 
 
@@ -228,8 +228,9 @@ QC_scatter <- gridExtra::grid.arrange(
                                          function(x){latex2exp::TeX(paste0('$',x,'\\times 10^6$'))})),
                        breaks = sort(c(0,seq(5,max(sce$total_counts),5)))) +
     annotate('text', x = 3.6, y = thres_total_counts,
-              label = latex2exp::TeX(paste0('$',round(thres_total_counts,2),'\\times 10^6$')), 
-              vjust = 1.2, size=3.9, color='red') + 
+              label = latex2exp::TeX(paste0('$',round(thres_total_counts,2),'\\times 10^6$'),
+                                     output = 'character'), 
+              vjust = 1.2, size=3.9, color='red',parse = TRUE) + 
     coord_cartesian(clip = 'off'),
   plotColData(sce, x="Cell.Type", y="detected_genes", colour_by="discard")+
     ggtitle("Detected genes") + ylab('Number of detected genes') +
@@ -291,27 +292,33 @@ ggsave('figures/QC_summary.pdf',QC_scatter, device='pdf', width = 15, height = 1
 total.cells <- table(sce$Cell.Type)
 total.cells <- c(total.cells,Total=sum(total.cells))
 # lib size
-low_lib_size.cells <- table(colData(sce)[sce$low_lib_size,]$Cell.Type)
+low_lib_size.cells <- as.data.frame(colData(sce)) %>% group_by(Cell.Type) %>% 
+  summarise(count=sum(low_lib_size==TRUE)) %>% tibble::deframe()
 low_lib_size.cells <- c(low_lib_size.cells, Total=sum(low_lib_size.cells))
 low_lib_size.prop <- round(low_lib_size.cells/total.cells,4)*100
 # detected genes
-low_detected_genes.cells <- table(colData(sce)[sce$low_detected_genes,]$Cell.Type)
+low_detected_genes.cells <- as.data.frame(colData(sce)) %>% group_by(Cell.Type) %>% 
+  summarise(count=sum(low_detected_genes==TRUE)) %>% tibble::deframe()
 low_detected_genes.cells <- c(low_detected_genes.cells, Total=sum(low_detected_genes.cells))
 low_detected_genes.prop <- round(low_detected_genes.cells/total.cells,4)*100
 # mito percent
-high_mito_percent.cells <- table(colData(sce)[sce$high_mito_percent,]$Cell.Type)
+high_mito_percent.cells <- as.data.frame(colData(sce)) %>% group_by(Cell.Type) %>% 
+  summarise(count=sum(high_mito_percent==TRUE)) %>% tibble::deframe()
 high_mito_percent.cells <- c(high_mito_percent.cells, Total=sum(high_mito_percent.cells))
 high_mito_percent.prop <- round(high_mito_percent.cells/total.cells,4)*100
 # ERCC percent
-high_ERCC_percent.cells <- table(colData(sce)[sce$high_ERCC_percent,]$Cell.Type)
+high_ERCC_percent.cells <- as.data.frame(colData(sce)) %>% group_by(Cell.Type) %>% 
+  summarise(count=sum(high_ERCC_percent==TRUE)) %>% tibble::deframe()
 high_ERCC_percent.cells <- c(high_ERCC_percent.cells, Total=sum(high_ERCC_percent.cells))
 high_ERCC_percent.prop <- round(high_ERCC_percent.cells/total.cells,4)*100
 # discard
-discard.cells <- table(colData(sce)[sce$discard,]$Cell.Type)
+discard.cells <- as.data.frame(colData(sce)) %>% group_by(Cell.Type) %>% 
+  summarise(count=sum(discard==TRUE)) %>% tibble::deframe()
 discard.cells <- c(discard.cells, Total=sum(discard.cells))
 discard.prop <- round(discard.cells/total.cells,4)*100
 # keep
-keep.cells <- table(colData(sce)[!sce$discard,]$Cell.Type)
+keep.cells <- as.data.frame(colData(sce)) %>% group_by(Cell.Type) %>% 
+  summarise(count=sum(discard==FALSE)) %>% tibble::deframe()
 keep.cells <- c(keep.cells, Total=sum(keep.cells))
 keep.prop <- round(keep.cells/total.cells,4)*100
 # create table
@@ -332,32 +339,32 @@ QC_table <- as.data.frame(QC_table)
 QC_table
 # lib size
 QC_table['low_lib_size.prop'] <- sapply(QC_table['low_lib_size.prop'],
-                                              function(x){paste0('(',x,'%)')})
+                                        function(x){paste0('(',x,'%)')})
 QC_table <- tidyr::unite(QC_table, low_lib_size, 
                          c(low_lib_size.cells, low_lib_size.prop), sep=' ')
 # detected genes
 QC_table['low_detected_genes.prop'] <- sapply(QC_table['low_detected_genes.prop'],
                                               function(x){paste0('(',x,'%)')})
 QC_table <- tidyr::unite(QC_table, low_detected_genes, 
-             c(low_detected_genes.cells, low_detected_genes.prop), sep=' ')
+                         c(low_detected_genes.cells, low_detected_genes.prop), sep=' ')
 # mito percent
 QC_table['high_mito_percent.prop'] <- sapply(QC_table['high_mito_percent.prop'],
-                                              function(x){paste0('(',x,'%)')})
+                                             function(x){paste0('(',x,'%)')})
 QC_table <- tidyr::unite(QC_table, high_mito_percent, 
                          c(high_mito_percent.cells, high_mito_percent.prop), sep=' ')
 # ERCC percent
 QC_table['high_ERCC_percent.prop'] <- sapply(QC_table['high_ERCC_percent.prop'],
-                                              function(x){paste0('(',x,'%)')})
+                                             function(x){paste0('(',x,'%)')})
 QC_table <- tidyr::unite(QC_table, high_ERCC_percent, 
                          c(high_ERCC_percent.cells, high_ERCC_percent.prop), sep=' ')
 # discard
 QC_table['discard.prop'] <- sapply(QC_table['discard.prop'],
-                                             function(x){paste0('(',x,'%)')})
+                                   function(x){paste0('(',x,'%)')})
 QC_table <- tidyr::unite(QC_table, discard, 
                          c(discard.cells, discard.prop), sep=' ')
 # keep 
 QC_table['keep.prop'] <- sapply(QC_table['keep.prop'],
-                                   function(x){paste0('(',x,'%)')})
+                                function(x){paste0('(',x,'%)')})
 QC_table <- tidyr::unite(QC_table, keep, 
                          c(keep.cells, keep.prop), sep=' ')
 # add index column
@@ -448,6 +455,7 @@ sce <- sce[, !cell_filter$discard]
 
 # remove cells with no expression of Oct4 and Sox2 (cell QC 2)
 # check how many cells are not expressing Oct4 in each cell type
+table(sce$Cell.Type)
 Oct4_fail <- c(
   sum(assays(sce)$counts[grepl('^Pou5f1$',rownames(sce)),colData(sce)$Cell.Type == '2i'] == 0),
   sum(assays(sce)$counts[grepl('^Pou5f1$',rownames(sce)),colData(sce)$Cell.Type == 'a2i'] == 0),
@@ -622,12 +630,12 @@ ggsave('figures/top100_hvg_raw.jpg',device='jpg', width = 20, height = 6)
 dev <- rowData(devianceFeatureSelection(sce,assay = "counts", fam='binomial'))$binomial_deviance
 
 # log counts of deviance
-features_hvg <- names(dev[order(dev,decreasing=TRUE)])[1:100]
-plotExpression(sce,features_hvg,exprs_values = "logcounts")+ ylim(0,20)
+features_dev <- names(dev[order(dev,decreasing=TRUE)])[1:100]
+plotExpression(sce,features_dev,exprs_values = "logcounts")+ ylim(0,20)
 ggsave('figures/top100_dev_log.jpg',device='jpg', width = 20, height = 6)
 
 # normalised raw counts of deviance
-plotExpression(sce,features_hvg,exprs_values = "norm_counts") + ylim(0,2e+5)
+plotExpression(sce,features_dev,exprs_values = "norm_counts") + ylim(0,2e+5)
 ggsave('figures/top100_dev_raw.jpg', device='jpg', width = 20, height = 6)
 
 
@@ -940,6 +948,9 @@ ElbowPlot(seurat) +
   annotate('text',x=PC_num.elbow, y=10,label='elbow point',color = 'red') +
   annotate('text',x=PC_num.gml, y=10,label='global maximum likelihood',color = 'red')
 ggsave('figures/PC_num_sele.jpg',device='jpg', width = 10, height = 6)
+
+# check the right number of PC used. If neccessary redo "test for resolution of leiden and features number"
+
 seurat <- RunTSNE(seurat, seed.use = seed, perplexity = 20, dims = 1:PC_num.gml)
 DimPlot(seurat, reduction = "tsne" , group.by = 'Cell.Type')
 #ggsave('figures/leiden_tsne.jpg', device='jpg', width = 8, height = 7)
@@ -2174,3 +2185,5 @@ find_inter(list(rownames(clust1_2i_nanog_spear_corr$corr_df),
                 candidates = oct4_tar.potent[oct4_tar.potent != 'Pou5f1']))
 find_inter(list(rownames(clust4_2i_nanog_spear_corr$corr_df),
                 candidates = oct4_tar.potent[oct4_tar.potent != 'Pou5f1']))
+
+save(list = ls(), file = 'test.RData')
