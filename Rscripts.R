@@ -1628,14 +1628,6 @@ build_corr <- function(corr){
 }
 oct4_tar_corr.matrix <- build_corr(oct4_tar.corr)
 
-# df <- as.data.frame(oct4_tar.corr[c('gene1','gene2','rho')])
-# df2 <- data.frame(gene1=df$gene2, gene2=df$gene1, rho=df$rho)
-# df <- rbind(df,df2)
-# oct4_tar_corr.matrix <- spread(df, key = gene2, value = rho)
-# rownames(oct4_tar_corr.matrix) <- oct4_tar_corr.matrix$gene1
-# oct4_tar_corr.matrix$gene1 <- NULL  # remove 1st column
-# diag(oct4_tar_corr.matrix) <- 1
-
 # plot correlation
 oct4_potent_tar <- pheatmap(oct4_tar_corr.matrix,fontsize_row=3,fontsize_col=3, 
                          main = 'Spearman correlation of potential Oct4 targets in serum',
@@ -1738,7 +1730,7 @@ spearman_corr <- function(sce_obj, clust_num, gene_name, ctrl_genes, clust_name,
                                color = colorRampPalette(rev(RColorBrewer::brewer.pal(10,"RdYlBu")))(40),
                                main = paste0('Top ',top_n,' positively & negatively correlated genes in ', clust_name),
                                gaps_row = gap,
-                               color_columns_by = 'label')
+                               color_columns_by = c("label", "Cell.Type"))
   
   # change the color of target gene
   fontsize = top_corr_plot$gtable$grobs[[3]]$gp$fontsize
