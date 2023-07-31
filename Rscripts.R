@@ -950,7 +950,6 @@ ElbowPlot(seurat) +
 ggsave('figures/PC_num_sele.jpg',device='jpg', width = 10, height = 6)
 
 # check the right number of PC used. If neccessary redo "test for resolution of leiden and features number"
-
 seurat <- RunTSNE(seurat, seed.use = seed, perplexity = 20, dims = 1:PC_num.gml)
 DimPlot(seurat, reduction = "tsne" , group.by = 'Cell.Type')
 #ggsave('figures/leiden_tsne.jpg', device='jpg', width = 8, height = 7)
@@ -965,7 +964,7 @@ assays(sce_dev)$norm_counts <- 2^(logcounts(sce_dev))-1
 sce_dev
 
 # select the best resolution and cluster cells using Leiden algorithm
-res_sele <- 0.7
+res_sele <- 0.7  # 0.7, 1.2, 1.7
 seurat <- FindNeighbors(seurat, dims = 1:PC_num.gml)
 seurat <- FindClusters(seurat, resolution = res_sele, algorithm = 4)  # algorithm 4 is "Leiden"; 1 is "Louvain"
 DimPlot(seurat, reduction = "tsne", label = TRUE, shape.by = 'Cell.Type')
@@ -2054,5 +2053,6 @@ find_inter(list(rownames(nanog_spear_corr[['1']]$corr_df),
 find_inter(list(rownames(nanog_spear_corr[['4']]$corr_df),
                 candidates = oct4_tar.potent[oct4_tar.potent != 'Pou5f1']))
 
+################################################################################
 save(list = ls(), file = 'test.RData')
 load('test.RData')
